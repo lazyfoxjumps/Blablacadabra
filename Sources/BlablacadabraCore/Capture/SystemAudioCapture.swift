@@ -87,7 +87,10 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
             into: pcm.mutableAudioBufferList)
         guard status == noErr else { return }
 
-        if converter == nil {
+        // The stream format can change mid-capture (default output device
+        // switch, sample-rate change); a converter built for the old format
+        // silently produces wrong-rate audio, so rebuild on any change.
+        if converter == nil || converter?.inputFormat != format {
             converter = PipelineFormatConverter(from: format)
         }
         guard let converted = converter?.convert(pcm) else { return }

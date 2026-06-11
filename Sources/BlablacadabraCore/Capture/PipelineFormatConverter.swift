@@ -7,12 +7,14 @@ import AVFoundation
 final class PipelineFormatConverter {
     private let converter: AVAudioConverter
     private let ratio: Double
+    let inputFormat: AVAudioFormat
 
     init?(from inputFormat: AVAudioFormat) {
         guard let converter = AVAudioConverter(from: inputFormat, to: AudioPipelineFormat.format) else {
             return nil
         }
         self.converter = converter
+        self.inputFormat = inputFormat
         self.ratio = AudioPipelineFormat.sampleRate / inputFormat.sampleRate
     }
 
