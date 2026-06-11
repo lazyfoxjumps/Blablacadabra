@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "BlablacadabraCore", targets: ["BlablacadabraCore"]),
         .executable(name: "capture-check", targets: ["CaptureCheck"]),
         .executable(name: "transcribe-check", targets: ["TranscribeCheck"]),
+        .executable(name: "Blablacadabra", targets: ["BlablacadabraApp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0")
@@ -23,6 +24,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "TranscribeCheck",
+            dependencies: ["BlablacadabraCore"]
+        ),
+        .executableTarget(
+            name: "BlablacadabraApp",
             dependencies: ["BlablacadabraCore"]
         ),
         .testTarget(

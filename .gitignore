@@ -17,3 +17,6 @@ Models/
 
 # macOS noise
 .DS_Store
+
+# Local app bundle (built by Scripts/make-app.sh)
+Blablacadabra.app/
