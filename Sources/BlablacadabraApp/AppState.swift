@@ -11,7 +11,9 @@ enum CaptureSourceChoice: String, CaseIterable, Identifiable {
         switch self {
         case .system: return "System audio"
         case .mic: return "Microphone"
-        case .both: return "System audio + mic"
+        // Always shown beside the other two pills, so "Both" stays literal
+        // and fits the panel width without truncating.
+        case .both: return "Both"
         }
     }
 }
@@ -123,7 +125,7 @@ final class AppState: ObservableObject {
         translate = defaults.bool(forKey: "translate")
         model = defaults.string(forKey: "model") ?? WhisperKitEngine.defaultModel
         themeMode = ThemeMode(rawValue: defaults.string(forKey: "themeMode") ?? "") ?? .system
-        fontChoice = FontChoice(rawValue: defaults.string(forKey: "fontChoice") ?? "") ?? .system
+        fontChoice = FontChoice(rawValue: defaults.string(forKey: "fontChoice") ?? "") ?? .nunito
         fontSize = defaults.object(forKey: "fontSize") as? Double ?? 21
         previousLines = defaults.object(forKey: "previousLines") as? Int ?? 2
         overlayOpacity = defaults.object(forKey: "overlayOpacity") as? Double ?? 0.9

@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="0.3.0" # Phase 3
+VERSION="0.3.1" # Phase 3 + mockup-match UI pass
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra
@@ -18,6 +18,12 @@ swift build -c release --package-path "$REPO" --product Blablacadabra
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$REPO/.build/release/Blablacadabra" "$APP/Contents/MacOS/Blablacadabra"
+
+# Bundle Nunito (body) + Jua (headings) so ATSApplicationFontsPath (=Fonts)
+# registers them at launch. Same pattern as Loft Hours.
+if [ -d "$REPO/Resources/Fonts" ]; then
+  cp -R "$REPO/Resources/Fonts" "$APP/Contents/Resources/Fonts"
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -42,6 +48,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>ATSApplicationFontsPath</key>
+    <string>Fonts</string>
     <key>NSHumanReadableCopyright</key>
     <string>Now you hear it, now you read it.</string>
     <key>NSMicrophoneUsageDescription</key>

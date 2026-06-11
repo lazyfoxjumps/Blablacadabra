@@ -9,7 +9,12 @@ final class SettingsWindowController: NSWindowController {
         )
         let window = NSWindow(contentViewController: host)
         window.title = "Blablacadabra settings"
-        window.styleMask = [.titled, .closable]
+        // Borderless-card look from the mockups: the content draws its own
+        // header; the system title bar goes transparent but keeps the close
+        // button (never trap the user in a window).
+        window.styleMask = [.titled, .closable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         window.center()
         self.init(window: window)

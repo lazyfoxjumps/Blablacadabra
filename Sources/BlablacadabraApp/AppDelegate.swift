@@ -15,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the plist flag in the bundled build keeps launch services agreeing).
         NSApp.setActivationPolicy(.accessory)
 
+        // Nunito body + Jua headings, bundled in Resources/Fonts.
+        AppFont.registerBundledFonts()
+
         state = AppState()
         overlay = OverlayPanelController(state: state)
         menuBar = MenuBarController(state: state) { [weak self] in
@@ -54,7 +57,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let window = NSWindow(contentViewController: host)
         window.title = "Welcome to Blablacadabra"
-        window.styleMask = [.titled, .closable]
+        // Same borderless-card chrome as settings.
+        window.styleMask = [.titled, .closable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         window.center()
         onboardingWindow = window

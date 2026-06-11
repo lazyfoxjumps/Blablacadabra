@@ -64,10 +64,10 @@ struct OnboardingView: View {
                         .foregroundStyle(Palette.burningFlame)
                 )
             Text("Now you hear it, now you read it.")
-                .font(.system(size: 22, weight: .bold))
+                .font(AppFont.tagline)
                 .foregroundStyle(theme.primaryText)
             Text("Live captions for everything on your Mac. Two quick steps, then you're done. No account, no setup maze.")
-                .font(.system(size: 13))
+                .font(AppFont.body)
                 .foregroundStyle(theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -78,7 +78,7 @@ struct OnboardingView: View {
     private func screenRecordingStep(theme: ResolvedTheme) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("macOS calls this permission Screen Recording, but I only listen to the audio. Nothing is recorded. Nothing leaves your Mac.")
-                .font(.system(size: 12))
+                .font(AppFont.detail)
                 .foregroundStyle(theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             switch screenStatus {
@@ -92,7 +92,7 @@ struct OnboardingView: View {
                     }
                     .buttonStyle(AccentButtonStyle(theme: theme))
                     Text("I'll detect it automatically. No restart needed.")
-                        .font(.system(size: 11))
+                        .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
                 }
             case .denied:
@@ -102,7 +102,7 @@ struct OnboardingView: View {
                     }
                     .buttonStyle(AccentButtonStyle(theme: theme))
                     Text("Turn on Blablacadabra under Privacy & Security, then Screen & System Audio Recording. I'll notice the moment you do.")
-                        .font(.system(size: 11))
+                        .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -113,14 +113,14 @@ struct OnboardingView: View {
     private func microphoneStep(theme: ResolvedTheme) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("With the mic I can also caption people in the room with you. Skip if unsure, you can turn it on later in one click.")
-                .font(.system(size: 12))
+                .font(AppFont.detail)
                 .foregroundStyle(theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             if micGranted {
                 doneLine("Microphone is ready.", theme: theme)
             } else if micSkipped {
                 Text("Skipped. No rush, it'll be right here.")
-                    .font(.system(size: 12))
+                    .font(AppFont.detail)
                     .foregroundStyle(theme.secondaryText)
             } else {
                 HStack(spacing: 12) {
@@ -134,7 +134,7 @@ struct OnboardingView: View {
                         micSkipped = true
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 12))
+                    .font(AppFont.detail)
                     .foregroundStyle(theme.secondaryText)
                 }
             }
@@ -144,7 +144,7 @@ struct OnboardingView: View {
     private func tryItStep(theme: ResolvedTheme) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Play any video. I'll start writing the moment anyone speaks.")
-                .font(.system(size: 12))
+                .font(AppFont.detail)
                 .foregroundStyle(theme.secondaryText)
             Button("Start captions") {
                 finish()
@@ -154,7 +154,7 @@ struct OnboardingView: View {
             .disabled(screenStatus != .granted)
             if screenStatus != .granted {
                 Text("Step 1 unlocks this one.")
-                    .font(.system(size: 11))
+                    .font(AppFont.footnote)
                     .foregroundStyle(theme.secondaryText)
             }
         }
@@ -183,7 +183,7 @@ struct OnboardingView: View {
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(AppFont.stepTitle)
                     .foregroundStyle(theme.primaryText)
                 content()
             }
@@ -201,7 +201,7 @@ struct OnboardingView: View {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(Palette.burningFlame)
             Text(text)
-                .font(.system(size: 12, weight: .medium))
+                .font(AppFont.nunito(12, .semibold))
                 .foregroundStyle(theme.primaryText)
         }
     }

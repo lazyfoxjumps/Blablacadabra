@@ -16,13 +16,24 @@ enum ThemeMode: String, CaseIterable, Identifiable {
 }
 
 enum FontChoice: String, CaseIterable, Identifiable {
-    case system, atkinson, openDyslexic
+    case nunito, system, atkinson, openDyslexic
     var id: String { rawValue }
 
     var label: String {
         switch self {
+        case .nunito: return "Nunito"
         case .system: return "System"
         case .atkinson: return "Atkinson Hyperlegible"
+        case .openDyslexic: return "OpenDyslexic"
+        }
+    }
+
+    /// Short label for pill chips (mockup style).
+    var shortLabel: String {
+        switch self {
+        case .nunito: return "Nunito"
+        case .system: return "System"
+        case .atkinson: return "Hyperlegible"
         case .openDyslexic: return "OpenDyslexic"
         }
     }
@@ -30,6 +41,7 @@ enum FontChoice: String, CaseIterable, Identifiable {
     /// PostScript family name to look up; nil means the system font.
     var familyName: String? {
         switch self {
+        case .nunito: return "Nunito"
         case .system: return nil
         case .atkinson: return "Atkinson Hyperlegible"
         case .openDyslexic: return "OpenDyslexic"

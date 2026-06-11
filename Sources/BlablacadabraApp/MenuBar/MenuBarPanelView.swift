@@ -18,7 +18,7 @@ struct MenuBarPanelView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(theme.accentText)
                 Text(state.statusText)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(AppFont.bodyMedium)
                     .foregroundStyle(theme.primaryText)
             }
 
@@ -36,7 +36,7 @@ struct MenuBarPanelView: View {
                         startStopLabel,
                         systemImage: state.isRunning ? "pause.fill" : "play.fill"
                     )
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(AppFont.nunito(14, .bold))
                     Spacer()
                 }
                 .padding(.vertical, 4)
@@ -48,7 +48,7 @@ struct MenuBarPanelView: View {
                     state.stopCaptions()
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12))
+                .font(AppFont.detail)
                 .foregroundStyle(theme.secondaryText)
             }
 
@@ -57,24 +57,22 @@ struct MenuBarPanelView: View {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("What I listen to")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
-                    Picker("", selection: $state.sourceChoice) {
-                        ForEach(CaptureSourceChoice.allCases) { choice in
-                            Text(choice.label).tag(choice)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
-                    .labelsHidden()
+                    PillPicker(
+                        selection: $state.sourceChoice,
+                        options: CaptureSourceChoice.allCases.map { ($0, $0.label) },
+                        theme: theme
+                    )
                 }
 
                 Toggle(isOn: $state.translate) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Translate to English")
-                            .font(.system(size: 13))
+                            .font(AppFont.body)
                             .foregroundStyle(theme.primaryText)
                         Text("Any language in, English captions out.")
-                            .font(.system(size: 11))
+                            .font(AppFont.footnote)
                             .foregroundStyle(theme.secondaryText)
                     }
                 }
@@ -82,17 +80,15 @@ struct MenuBarPanelView: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Speech model")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
-                    Picker("", selection: $state.model) {
-                        ForEach(WhisperKitEngine.availableModels, id: \.self) { name in
-                            Text(name.capitalized).tag(name)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    PillPicker(
+                        selection: $state.model,
+                        options: WhisperKitEngine.availableModels.map { ($0, $0.capitalized) },
+                        theme: theme
+                    )
                     Text("Bigger is more accurate, smaller is faster.")
-                        .font(.system(size: 11))
+                        .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
                 }
             }
@@ -102,12 +98,12 @@ struct MenuBarPanelView: View {
             HStack {
                 Button("Settings") { openSettings() }
                     .buttonStyle(.plain)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(AppFont.bodyMedium)
                     .foregroundStyle(theme.accentText)
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
                     .buttonStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(AppFont.body)
                     .foregroundStyle(theme.secondaryText)
             }
         }

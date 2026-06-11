@@ -1,9 +1,10 @@
 import BlablacadabraCore
 import SwiftUI
 
-/// Settings, exactly as designed: live preview at top, then generously
-/// spaced sections (32 between sections, 16 between rows, one heading per
-/// group). Space over squeeze, always.
+/// Settings, matching the approved mockups: card header row, live preview at
+/// top, generously spaced sections (32 between sections, 16 between rows, one
+/// Jua heading per group), pill pickers instead of native controls, circular
+/// color swatches. Nunito body, Jua headings.
 struct SettingsView: View {
     @ObservedObject var state: AppState
     let resetOverlayPosition: () -> Void
@@ -13,18 +14,22 @@ struct SettingsView: View {
     var body: some View {
         let theme = state.theme
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 32) {
-                preview(theme: theme)
-                sizeAndLayout(theme: theme)
-                colors(theme: theme)
-                fontAndPosition(theme: theme)
-                behavior(theme: theme)
-                engine(theme: theme)
+        VStack(spacing: 0) {
+            headerBar(theme: theme)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 32) {
+                    preview(theme: theme)
+                    sizeAndLayout(theme: theme)
+                    colors(theme: theme)
+                    fontAndPosition(theme: theme)
+                    behavior(theme: theme)
+                    engine(theme: theme)
+                }
+                .padding(28)
             }
-            .padding(28)
         }
-        .frame(width: 520, height: 640)
+        .frame(width: 520, height: 660)
         .background(theme.deepSurface)
         .preferredColorScheme(theme.colorScheme)
         .onAppear {
@@ -33,11 +38,24 @@ struct SettingsView: View {
         }
     }
 
+    /// In-card window header (the window's own title bar is transparent).
+    private func headerBar(theme: ResolvedTheme) -> some View {
+        HStack(spacing: 10) {
+            Text("Blablacadabra settings")
+                .font(AppFont.windowTitle)
+                .foregroundStyle(theme.primaryText)
+            Spacer()
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 36)
+        .padding(.bottom, 4)
+    }
+
     // MARK: Preview
 
     private func preview(theme: ResolvedTheme) -> some View {
         let colors = state.captionColors
-        return section("Preview", theme: theme) {
+        return section("Preview", subtitle: "Updates live as you change things.", theme: theme) {
             VStack(alignment: .leading, spacing: 6) {
                 if !state.calmMode && state.previousLines > 0 {
                     Text("This is what an earlier line looks like.")
@@ -93,23 +111,21 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Theme")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(AppFont.detail)
                         .foregroundStyle(theme.secondaryText)
-                    Picker("", selection: $state.themeMode) {
-                        ForEach(ThemeMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    PillPicker(
+                        selection: $state.themeMode,
+                        options: ThemeMode.allCases.map { ($0, $0.label) },
+                        theme: theme
+                    )
                     if state.themeMode == .sun {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Sun switches to light at sunrise and dark at sunset, computed on this Mac.")
-                                .font(.system(size: 11))
+                                .font(AppFont.footnote)
                                 .foregroundStyle(theme.secondaryText)
                             Toggle(isOn: $state.useLocationForSun) {
                                 Text("Use my location for exact sunrise times. Skip if unsure, my timezone estimate works fine.")
-                                    .font(.system(size: 11))
+                                    .font(AppFont.footnote)
                                     .foregroundStyle(theme.primaryText)
                             }
                             .toggleStyle(FlameToggleStyle())
@@ -119,9 +135,9 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Caption colors")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(AppFont.detail)
                         .foregroundStyle(theme.secondaryText)
-                    swatchGrid(theme: theme)
+                    swatchRow(theme: theme)
                     if state.captionPresetID == "custom" {
                         HStack(spacing: 16) {
                             ColorPicker("Text", selection: $customText, supportsOpacity: false)
@@ -133,7 +149,7 @@ struct SettingsView: View {
                                     state.customBackgroundHex = RGB(newValue).hexString
                                 }
                         }
-                        .font(.system(size: 12))
+                        .font(AppFont.detail)
                         .foregroundStyle(theme.primaryText)
                     }
                     contrastVerdict(theme: theme)
@@ -142,24 +158,25 @@ struct SettingsView: View {
         }
     }
 
-    private func swatchGrid(theme: ResolvedTheme) -> some View {
-        let columns = [GridItem(.adaptive(minimum: 64), spacing: 10)]
-        return LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+    /// Circular swatches (mockup style): background-colored circles with the
+    /// text color as a center dot; custom hides behind a dashed plus.
+    private func swatchRow(theme: ResolvedTheme) -> some View {
+        HStack(spacing: 10) {
             ForEach(CaptionPreset.vetted) { preset in
                 swatch(for: preset, theme: theme)
             }
-            // Custom hides behind a plus until wanted (design kit).
             Button {
                 state.captionPresetID = "custom"
             } label: {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                Circle()
                     .strokeBorder(theme.secondaryText.opacity(0.5), style: StrokeStyle(lineWidth: 1.5, dash: [4]))
-                    .frame(width: 64, height: 40)
+                    .frame(width: 34, height: 34)
                     .overlay(
                         Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(theme.secondaryText)
                     )
-                    .overlay(selectionRing(active: state.captionPresetID == "custom", theme: theme))
+                    .overlay(selectionRing(active: state.captionPresetID == "custom"))
             }
             .buttonStyle(.plain)
             .help("Pick your own colors")
@@ -172,22 +189,25 @@ struct SettingsView: View {
         return Button {
             state.captionPresetID = preset.id
         } label: {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            Circle()
                 .fill(background.color)
-                .frame(width: 64, height: 40)
+                .frame(width: 34, height: 34)
                 .overlay(
-                    Text("Abc")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(text.color)
+                    Circle()
+                        .fill(text.color)
+                        .frame(width: 12, height: 12)
                 )
-                .overlay(selectionRing(active: state.captionPresetID == preset.id, theme: theme))
+                .overlay(
+                    Circle().strokeBorder(theme.secondaryText.opacity(0.25), lineWidth: 0.5)
+                )
+                .overlay(selectionRing(active: state.captionPresetID == preset.id))
         }
         .buttonStyle(.plain)
         .help(preset.name)
     }
 
-    private func selectionRing(active: Bool, theme: ResolvedTheme) -> some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+    private func selectionRing(active: Bool) -> some View {
+        Circle()
             .strokeBorder(active ? Palette.burningFlame : .clear, lineWidth: 2.5)
     }
 
@@ -212,7 +232,7 @@ struct SettingsView: View {
             Image(systemName: symbol)
             Text(verdict)
         }
-        .font(.system(size: 12))
+        .font(AppFont.detail)
         .foregroundStyle(ratio >= 4.5 ? theme.secondaryText : theme.accentText)
     }
 
@@ -222,23 +242,21 @@ struct SettingsView: View {
         section("Font and position", theme: theme) {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Picker("", selection: $state.fontChoice) {
-                        ForEach(FontChoice.allCases) { choice in
-                            Text(choice.label).tag(choice)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
-                    .labelsHidden()
+                    PillPicker(
+                        selection: $state.fontChoice,
+                        options: FontChoice.allCases.map { ($0, $0.shortLabel) },
+                        theme: theme
+                    )
                     if !state.fontChoice.isInstalled {
                         Text("\(state.fontChoice.label) isn't installed on this Mac yet, so I'm using the system font for now. Install it and I'll switch over.")
-                            .font(.system(size: 11))
+                            .font(AppFont.footnote)
                             .foregroundStyle(theme.accentText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("The caption card moves when you drag it. If it ends up somewhere odd, this brings it home.")
-                        .font(.system(size: 11))
+                        .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                     Button("Reset caption position") {
@@ -294,10 +312,10 @@ struct SettingsView: View {
     private func behaviorLabel(_ title: String, detail: String, theme: ResolvedTheme) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 13))
+                .font(AppFont.body)
                 .foregroundStyle(theme.primaryText)
             Text(detail)
-                .font(.system(size: 11))
+                .font(AppFont.footnote)
                 .foregroundStyle(theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -309,22 +327,20 @@ struct SettingsView: View {
         section("Speech engine", theme: theme) {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Picker("", selection: $state.model) {
-                        ForEach(WhisperKitEngine.availableModels, id: \.self) { name in
-                            Text(name.capitalized).tag(name)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    PillPicker(
+                        selection: $state.model,
+                        options: WhisperKitEngine.availableModels.map { ($0, $0.capitalized) },
+                        theme: theme
+                    )
                     Text("Bigger is more accurate, smaller is faster. Base is a good middle.")
-                        .font(.system(size: 11))
+                        .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
                 }
                 HStack(spacing: 6) {
                     Image(systemName: "lock")
                     Text("Everything stays on this Mac. Audio never leaves it.")
                 }
-                .font(.system(size: 12, weight: .medium))
+                .font(AppFont.detail)
                 .foregroundStyle(theme.primaryText)
             }
         }
@@ -332,11 +348,23 @@ struct SettingsView: View {
 
     // MARK: Section scaffolding
 
-    private func section(_ title: String, theme: ResolvedTheme, @ViewBuilder content: () -> some View) -> some View {
+    private func section(
+        _ title: String,
+        subtitle: String? = nil,
+        theme: ResolvedTheme,
+        @ViewBuilder content: () -> some View
+    ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(theme.primaryText)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppFont.sectionHeading)
+                    .foregroundStyle(theme.primaryText)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(AppFont.footnote)
+                        .foregroundStyle(theme.secondaryText)
+                }
+            }
             content()
         }
         .padding(16)
@@ -356,11 +384,11 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(title)
-                    .font(.system(size: 13))
+                    .font(AppFont.body)
                     .foregroundStyle(theme.primaryText)
                 Spacer()
                 Text(detail)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(AppFont.detail)
                     .foregroundStyle(theme.secondaryText)
             }
             content()

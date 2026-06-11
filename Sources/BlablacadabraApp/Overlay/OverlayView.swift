@@ -51,7 +51,7 @@ struct OverlayView: View {
             Image(systemName: state.statusSymbol)
                 .font(.system(size: 12, weight: .semibold))
             Text(state.statusText)
-                .font(.system(size: 12, weight: .medium))
+                .font(AppFont.nunito(12, .semibold))
                 .lineLimit(1)
             Spacer(minLength: 16)
             Image(systemName: "line.3.horizontal")
@@ -183,7 +183,7 @@ struct AccentButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13, weight: .semibold))
+            .font(AppFont.nunito(13, .bold))
             .foregroundStyle(Palette.abyssal)
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
