@@ -1,0 +1,19 @@
+# Internal documents — keep out of the repo
+Handoff.md
+docs-internal/
+*.handoff.md
+
+# Build artifacts
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Audio/model artifacts
+*.wav
+*.aiff
+Models/
+
+# macOS noise
+.DS_Store
