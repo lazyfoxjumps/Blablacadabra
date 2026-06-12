@@ -183,6 +183,7 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
             .help("Pick your own colors")
+            .accessibilityLabel("Pick your own colors")
         }
     }
 
@@ -207,6 +208,8 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
         .help(preset.name)
+        .accessibilityLabel("Caption colors: \(preset.name)")
+        .accessibilityAddTraits(state.captionPresetID == preset.id ? .isSelected : [])
     }
 
     private func selectionRing(active: Bool) -> some View {

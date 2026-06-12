@@ -30,7 +30,7 @@ struct OverlayView: View {
         .frame(width: Self.cardWidth, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(colors.background.color.opacity(state.overlayOpacity))
+                .fill(colors.background.color.opacity(state.effectiveOverlayOpacity))
         )
         .opacity(fadedOut ? 0 : 1)
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now in
@@ -38,10 +38,10 @@ struct OverlayView: View {
         }
         .onChange(of: state.lastEventAt) {
             if fadedOut {
-                withAnimation(.easeIn(duration: 0.3)) { fadedOut = false }
+                withAnimation(fadeAnimation(.easeIn(duration: 0.3))) { fadedOut = false }
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: state.partial)
+        .animation(state.reduceMotion ? nil : .easeInOut(duration: 0.2), value: state.partial)
     }
 
     // MARK: Header
@@ -57,6 +57,7 @@ struct OverlayView: View {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 12, weight: .semibold))
                 .help("Drag anywhere on the card to move it")
+                .accessibilityHidden(true)
             if state.phase == .paused {
                 Button {
                     state.resumeCaptions()
@@ -65,6 +66,7 @@ struct OverlayView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Resume captions")
+                .accessibilityLabel("Resume captions")
             } else if state.isRunning {
                 Button {
                     state.pauseCaptions()
@@ -73,6 +75,7 @@ struct OverlayView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Pause captions. The last lines stay put.")
+                .accessibilityLabel("Pause captions")
             }
         }
         .foregroundStyle(textColor.color.opacity(0.75))
@@ -167,13 +170,19 @@ struct OverlayView: View {
 
     private func updateSilenceFade(now: Date) {
         guard state.hideOnSilence, state.phase == .listening else {
-            if fadedOut { withAnimation(.easeIn(duration: 0.3)) { fadedOut = false } }
+            if fadedOut { withAnimation(fadeAnimation(.easeIn(duration: 0.3))) { fadedOut = false } }
             return
         }
         let quietFor = now.timeIntervalSince(state.lastEventAt ?? now)
         if quietFor >= 6, !fadedOut {
-            withAnimation(.easeOut(duration: 1.2)) { fadedOut = true }
+            withAnimation(fadeAnimation(.easeOut(duration: 1.2))) { fadedOut = true }
         }
+    }
+
+    /// System Reduce Motion makes every fade instant (hide-on-silence still
+    /// hides; it just stops animating on the way out).
+    private func fadeAnimation(_ animation: Animation) -> Animation? {
+        state.reduceMotion ? nil : animation
     }
 }
 

@@ -14,9 +14,22 @@ public actor WhisperKitEngine: TranscriptionEngine {
 
     public let model: String
     private var whisper: WhisperKit?
+    private var prepareHandler: (@Sendable (PrepareEvent) -> Void)?
+
+    /// Milestones during `prepare()`, for honest status copy: downloading
+    /// (with 0...1 progress) vs loading/compiling the already-downloaded model.
+    public enum PrepareEvent: Sendable {
+        case downloading(Double)
+        case loading
+    }
 
     public init(model: String = WhisperKitEngine.defaultModel) {
         self.model = model
+    }
+
+    /// Install before `prepare()`; called from a background thread.
+    public func setPrepareHandler(_ handler: (@Sendable (PrepareEvent) -> Void)?) {
+        prepareHandler = handler
     }
 
     /// Whether this model is already on disk (WhisperKit caches under
@@ -24,24 +37,82 @@ public actor WhisperKitEngine: TranscriptionEngine {
     /// will download first, which can take minutes on the bigger models; the
     /// UI uses this to say so instead of a vague "warming up".
     public static func isModelCached(_ model: String) -> Bool {
-        guard let documents = FileManager.default.urls(
-            for: .documentDirectory, in: .userDomainMask
-        ).first else { return false }
-        let modelDir = documents.appendingPathComponent(
-            "huggingface/models/argmaxinc/whisperkit-coreml/openai_whisper-\(model)"
-        )
+        guard let modelDir = cachedModelFolder(model) else { return false }
         // The decoder weights land last; their compiled model is the
         // "download actually finished" marker.
         let decoder = modelDir.appendingPathComponent("TextDecoder.mlmodelc/coremldata.bin")
         return FileManager.default.fileExists(atPath: decoder.path)
     }
 
+    static func cachedModelFolder(_ model: String) -> URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent(
+                "huggingface/models/argmaxinc/whisperkit-coreml/openai_whisper-\(model)"
+            )
+    }
+
     public func prepare() async throws {
         guard whisper == nil else { return }
-        do {
-            whisper = try await WhisperKit(WhisperKitConfig(model: model))
-        } catch {
-            throw TranscriptionError.modelLoadFailed(String(describing: error))
+        let handler = prepareHandler
+
+        // Download explicitly (instead of letting WhisperKit.init do it
+        // silently) so progress can reach the UI. Cached models skip this.
+        var modelFolder = Self.isModelCached(model) ? Self.cachedModelFolder(model) : nil
+        if modelFolder == nil {
+            handler?(.downloading(0))
+            do {
+                modelFolder = try await WhisperKit.download(variant: model) { progress in
+                    handler?(.downloading(progress.fractionCompleted))
+                }
+            } catch {
+                throw TranscriptionError.modelLoadFailed(String(describing: error))
+            }
+        }
+
+        handler?(.loading)
+        // Init from the local folder: WhisperKit then never touches the
+        // network (its model-name init phones home for a support config even
+        // with a full cache; "everything stays on this Mac" should mean it).
+        whisper = try await Self.loadGuardingAgainstStall(model: model, folder: modelFolder)
+    }
+
+    /// WhisperKit init can stall indefinitely right after an in-app download
+    /// completes (observed: 8+ min at 0% CPU; a fresh init then loads in
+    /// seconds). Guard: time the first attempt out and retry once with a
+    /// brand-new init before giving up.
+    private static func loadGuardingAgainstStall(model: String, folder: URL?) async throws -> WhisperKit {
+        for attempt in 1...2 {
+            do {
+                return try await withTimeout(seconds: 180) {
+                    try await WhisperKit(WhisperKitConfig(model: model, modelFolder: folder?.path))
+                }
+            } catch is LoadStallTimeout {
+                if attempt == 2 {
+                    throw TranscriptionError.modelLoadFailed("model load stalled twice")
+                }
+                // fall through to retry with a fresh WhisperKit init
+            } catch {
+                throw TranscriptionError.modelLoadFailed(String(describing: error))
+            }
+        }
+        throw TranscriptionError.modelLoadFailed("unreachable")
+    }
+
+    private struct LoadStallTimeout: Error {}
+
+    private static func withTimeout<T: Sendable>(
+        seconds: Double,
+        _ work: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw LoadStallTimeout()
+            }
+            guard let result = try await group.next() else { throw LoadStallTimeout() }
+            group.cancelAll()
+            return result
         }
     }
 

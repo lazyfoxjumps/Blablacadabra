@@ -38,6 +38,9 @@ final class AppState: ObservableObject {
     /// True while `.starting` involves a first-time model download (so the
     /// status can be honest about why the wait is long).
     @Published private(set) var startingNeedsDownload = false
+    /// Download progress (0...1) while the speech model is being fetched,
+    /// nil otherwise. Drives the percentage in the status line.
+    @Published private(set) var downloadProgress: Double?
     @Published private(set) var lines: [String] = []
     @Published private(set) var partial: String?
     @Published private(set) var lastEventAt: Date?
@@ -45,6 +48,16 @@ final class AppState: ObservableObject {
     private var pipeline: TranscriptionPipeline?
     private var sessionTask: Task<Void, Never>?
     private var sessionGeneration = 0
+
+    // MARK: Apple accessibility (system-wide settings, reflected live)
+
+    /// Mirrors System Settings > Accessibility > Display. The app honors
+    /// these everywhere: Reduce Motion kills crossfades and fades, Reduce
+    /// Transparency and Increase Contrast force a fully opaque overlay, and
+    /// Increase Contrast also pins captions to the max-contrast pair.
+    @Published private(set) var reduceMotion = false
+    @Published private(set) var reduceTransparency = false
+    @Published private(set) var increaseContrast = false
 
     // MARK: Theme (resolved)
 
@@ -167,6 +180,16 @@ final class AppState: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled
 
         isDark = resolveIsDark()
+        refreshAccessibility()
+
+        // Accessibility display options (Reduce Motion/Transparency,
+        // Increase Contrast) apply the moment the user flips them.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshAccessibility() }
+        }
 
         // System appearance flips arrive here; Sun mode is re-checked on a
         // slow timer (sunrise doesn't sneak up on anyone).
@@ -198,6 +221,7 @@ final class AppState: ObservableObject {
         sessionGeneration += 1
         let generation = sessionGeneration
         startingNeedsDownload = !WhisperKitEngine.isModelCached(model)
+        downloadProgress = nil
         phase = .starting
         partial = nil
 
@@ -206,6 +230,22 @@ final class AppState: ObservableObject {
             do {
                 let source = self.makeSource()
                 let engine = WhisperKitEngine(model: self.model)
+                // Honest waiting: percentage while downloading, and the
+                // status flips to "warming up" the moment the download ends
+                // and the CoreML compile starts.
+                await engine.setPrepareHandler { [weak self] event in
+                    Task { @MainActor in
+                        guard let self, self.sessionGeneration == generation else { return }
+                        switch event {
+                        case .downloading(let fraction):
+                            self.startingNeedsDownload = true
+                            self.downloadProgress = fraction
+                        case .loading:
+                            self.startingNeedsDownload = false
+                            self.downloadProgress = nil
+                        }
+                    }
+                }
                 let pipeline = TranscriptionPipeline(
                     source: source,
                     engine: engine,
@@ -264,6 +304,7 @@ final class AppState: ObservableObject {
         let pipeline = pipeline
         self.pipeline = nil
         sessionTask = nil
+        downloadProgress = nil
         phase = newPhase
         if let pipeline {
             Task { await pipeline.stop() }
@@ -311,9 +352,13 @@ final class AppState: ObservableObject {
         case .idle:
             return "Captions off"
         case .starting:
-            return startingNeedsDownload
-                ? "Downloading the speech model · first time only, this can take a few minutes"
-                : "Warming up · getting the model ready"
+            if startingNeedsDownload {
+                if let progress = downloadProgress, progress > 0 {
+                    return "Downloading the speech model · \(Int(progress * 100))% · first time only"
+                }
+                return "Downloading the speech model · first time only, this can take a few minutes"
+            }
+            return "Warming up · getting the model ready"
         case .listening:
             return translate
                 ? "Translating to English · \(sourceChoice.label)"
@@ -344,6 +389,13 @@ final class AppState: ObservableObject {
 
     /// Effective caption colors after preset/custom/theme resolution.
     var captionColors: (text: RGB, background: RGB) {
+        // System "Increase contrast" outranks any chosen preset: pin to the
+        // highest-contrast pair the palette has for the current mode.
+        if increaseContrast {
+            return isDark
+                ? (RGB(hexString: "#EEE9DF")!, RGB(hexString: "#1B2632")!)
+                : (RGB(hexString: "#1B2632")!, RGB(hexString: "#F7F4EC")!)
+        }
         if captionPresetID == "custom",
            let text = RGB(hexString: customTextHex),
            let background = RGB(hexString: customBackgroundHex) {
@@ -378,9 +430,28 @@ final class AppState: ObservableObject {
     }
 
     private func crossfade(to dark: Bool) {
+        if reduceMotion {
+            isDark = dark
+            return
+        }
         withAnimation(.easeInOut(duration: 1.4)) {
             isDark = dark
         }
+    }
+
+    // MARK: - Accessibility
+
+    /// Overlay background opacity, with the system transparency/contrast
+    /// settings outranking the user's slider.
+    var effectiveOverlayOpacity: Double {
+        (reduceTransparency || increaseContrast) ? 1.0 : overlayOpacity
+    }
+
+    private func refreshAccessibility() {
+        let workspace = NSWorkspace.shared
+        reduceMotion = workspace.accessibilityDisplayShouldReduceMotion
+        reduceTransparency = workspace.accessibilityDisplayShouldReduceTransparency
+        increaseContrast = workspace.accessibilityDisplayShouldIncreaseContrast
     }
 
     private func resolveIsDark() -> Bool {

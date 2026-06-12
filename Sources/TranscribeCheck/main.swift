@@ -78,6 +78,16 @@ Task {
         let meter = LevelMeter()
         await pipeline.setAudioTap { meter.record($0) }
 
+        // Mirror what the app's status line gets: download percent, then load.
+        await engine.setPrepareHandler { event in
+            switch event {
+            case .downloading(let fraction):
+                FileHandle.standardOutput.write(Data("\r  downloading \(Int(fraction * 100))%\u{1B}[K".utf8))
+            case .loading:
+                FileHandle.standardOutput.write(Data("\r  download done, loading model\u{1B}[K\n".utf8))
+            }
+        }
+
         print("Loading model '\(model)' (downloads on first run)...")
         let captions = try await pipeline.start()
         let mode = translate ? "translate -> English" : "transcribe"
