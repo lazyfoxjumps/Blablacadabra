@@ -27,15 +27,23 @@ public actor TranscriptionPipeline {
     /// The translate toggle. Settable mid-stream; applies from the next chunk.
     public private(set) var task: TranscriptionTask
 
+    /// The locked spoken language (ISO 639-1), or nil for auto-detect. When
+    /// set, detection is skipped entirely: the code is forced on every decode.
+    /// This is both the fix for misdetection (an English hum coming back as
+    /// Japanese) and a latency win (one fewer model pass per final).
+    public private(set) var spokenLanguage: String?
+
     /// Bilingual captions: when translating, also transcribe the original and
     /// surface it above the English. Settable mid-stream. Ignored unless
     /// `task == .translate`. Finals only (partials stay translation-only so
     /// the live latency the user feels stays low).
     public private(set) var showOriginal: Bool
 
-    /// Last detected source language, carried onto partials (which don't run
-    /// their own detection) so the status line doesn't flicker between
-    /// utterances.
+    /// Cached source language. In auto mode the engine detects ONCE (on the
+    /// first final of the session) and reuses the result for every later chunk:
+    /// per-chunk detection flip-flops on short or ambiguous audio, and re-running
+    /// it every utterance is wasted latency. Reset when the task or the locked
+    /// language changes, so the next decode re-detects fresh.
     private var lastLanguage: String?
 
     /// Optional tap on incoming audio (converted pipeline-format samples);
@@ -54,19 +62,30 @@ public actor TranscriptionPipeline {
         source: AudioSource,
         engine: TranscriptionEngine,
         task: TranscriptionTask = .transcribe,
+        spokenLanguage: String? = nil,
         showOriginal: Bool = false,
         vadConfig: VADConfiguration = VADConfiguration()
     ) {
         self.source = source
         self.engine = engine
         self.task = task
+        self.spokenLanguage = (spokenLanguage?.isEmpty == true) ? nil : spokenLanguage
         self.showOriginal = showOriginal
         self.vadConfig = vadConfig
     }
 
     public func setTask(_ newTask: TranscriptionTask) {
         task = newTask
-        if newTask != .translate { lastLanguage = nil }
+        // A fresh task re-detects from scratch (and turning translate off
+        // clears the "from" language the status line was showing).
+        lastLanguage = nil
+    }
+
+    /// Locks the spoken language (nil/empty = auto-detect). Applies mid-stream;
+    /// clearing the cache so the new choice takes hold on the next chunk.
+    public func setSpokenLanguage(_ code: String?) {
+        spokenLanguage = (code?.isEmpty == true) ? nil : code
+        lastLanguage = nil
     }
 
     public func setShowOriginal(_ show: Bool) {
@@ -171,10 +190,14 @@ public actor TranscriptionPipeline {
     /// Per-chunk failures are skipped (a `nil` event), never fatal: one bad
     /// decode shouldn't kill a live caption session.
     private func produceEvent(samples: [Float], isFinal: Bool) async -> CaptionEvent? {
+        // One language decision for the whole chunk: a locked language wins and
+        // skips detection; auto mode detects once and reuses (see below).
+        let language = await resolvedLanguage(for: samples, isFinal: isFinal)
+
         guard task == .translate else {
-            // Plain transcription: detect then transcribe in that language, so
-            // a non-English speaker isn't forced into English text.
-            let language = (try? await engine.detectLanguage(samples)) ?? nil
+            // Plain transcription: decode in the resolved language, so a
+            // non-English speaker isn't forced into English text and an English
+            // speaker isn't misdetected into Japanese mid-sentence.
             let out = (try? await engine.transcribe(samples, task: .transcribe, language: language)) ?? .empty
             guard !out.text.isEmpty else { return nil }
             let reported = language ?? out.detectedLanguage
@@ -184,26 +207,38 @@ public actor TranscriptionPipeline {
         }
 
         // Translating. Partials stay translation-only (keep the live latency
-        // the user feels low) and reuse the last known source language.
+        // the user feels low).
         if !isFinal {
-            let english = ((try? await engine.transcribe(samples, task: .translate, language: lastLanguage)) ?? .empty).text
-            return english.isEmpty ? nil : .partial(english, language: lastLanguage)
+            let english = ((try? await engine.transcribe(samples, task: .translate, language: language)) ?? .empty).text
+            return english.isEmpty ? nil : .partial(english, language: language)
         }
 
-        // Final: detect the source once, then force it on both passes. The
-        // translate task otherwise reports the target ("en"), and the
-        // transcribe task would come back in English instead of the original.
-        let source = (try? await engine.detectLanguage(samples)) ?? nil
-        let english = ((try? await engine.transcribe(samples, task: .translate, language: source)) ?? .empty).text
+        // Final: force the resolved language on both passes. The translate task
+        // otherwise reports the target ("en"), and the transcribe task would
+        // come back in English instead of the original.
+        let english = ((try? await engine.transcribe(samples, task: .translate, language: language)) ?? .empty).text
         guard !english.isEmpty else { return nil }
 
         var original: String?
         if showOriginal {
-            let src = (try? await engine.transcribe(samples, task: .transcribe, language: source)) ?? .empty
+            let src = (try? await engine.transcribe(samples, task: .transcribe, language: language)) ?? .empty
             original = src.text.isEmpty ? nil : src.text
         }
-        if let source { lastLanguage = source }
-        return .final(english, original: original, language: source ?? lastLanguage)
+        return .final(english, original: original, language: language)
+    }
+
+    /// The language to decode this chunk as. A locked `spokenLanguage` wins and
+    /// never spends a detection pass. In auto mode the first final detects and
+    /// caches; every later chunk reuses that. Partials never detect (a tiny
+    /// rolling partial is the least reliable moment to language-ID, and the
+    /// next final settles it anyway).
+    private func resolvedLanguage(for samples: [Float], isFinal: Bool) async -> String? {
+        if let spokenLanguage { return spokenLanguage }
+        if let lastLanguage { return lastLanguage }
+        guard isFinal else { return nil }
+        let detected = (try? await engine.detectLanguage(samples)) ?? nil
+        if let detected { lastLanguage = detected }
+        return detected
     }
 
     private func finishIfDrained() {

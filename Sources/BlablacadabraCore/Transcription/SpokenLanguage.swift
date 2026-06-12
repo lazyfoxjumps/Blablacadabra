@@ -11,6 +11,23 @@ public enum SpokenLanguage {
         return names[code.lowercased()]
     }
 
+    /// Languages to offer in the manual "spoken language" picker, common ones
+    /// first (so the everyday choices are one glance away), then the rest of
+    /// Whisper's set alphabetically. "Auto-detect" is handled separately by the
+    /// caller (a nil selection), so it is not in this list.
+    public static let pickerList: [(code: String, name: String)] = {
+        let commonCodes = [
+            "en", "id", "es", "zh", "ja", "ko", "de", "fr", "pt", "ru",
+            "ar", "hi", "vi", "th", "ms", "it", "nl", "tr",
+        ]
+        let common = commonCodes.compactMap { code in names[code].map { (code, $0) } }
+        let rest = names
+            .filter { !commonCodes.contains($0.key) }
+            .map { (code: $0.key, name: $0.value) }
+            .sorted { $0.name < $1.name }
+        return common + rest
+    }()
+
     private static let names: [String: String] = [
         "en": "English",
         "zh": "Chinese", "de": "German", "es": "Spanish", "ru": "Russian",

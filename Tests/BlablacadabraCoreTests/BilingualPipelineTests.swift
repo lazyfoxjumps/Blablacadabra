@@ -67,6 +67,40 @@ private actor ScriptedSource: AudioSource {
     func stop() async {}
 }
 
+/// Two speech bursts separated by enough silence to finalize the first, so the
+/// pipeline produces two finals from one playback (for checking that auto-mode
+/// language detection runs once and is cached, not re-run per utterance).
+private actor TwoUtteranceSource: AudioSource {
+    func start() async throws -> AsyncStream<AVAudioPCMBuffer> {
+        AsyncStream { continuation in
+            let format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: AudioPipelineFormat.sampleRate,
+                channels: 1,
+                interleaved: false
+            )!
+            let rate = Int(AudioPipelineFormat.sampleRate)
+            func speech(_ secs: Double) -> [Float] {
+                (0..<Int(Double(rate) * secs)).map { $0 % 2 == 0 ? 0.2 : -0.2 }
+            }
+            func silence(_ secs: Double) -> [Float] {
+                [Float](repeating: 0, count: Int(Double(rate) * secs))
+            }
+            // 0.8s gap clears the 0.6s finalize threshold between the bursts.
+            let samples = speech(1.0) + silence(0.8) + speech(1.0)
+            let frames = AVAudioFrameCount(samples.count)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+            buffer.frameLength = frames
+            let ptr = buffer.floatChannelData![0]
+            for (i, sample) in samples.enumerated() { ptr[i] = sample }
+            continuation.yield(buffer)
+            continuation.finish()
+        }
+    }
+
+    func stop() async {}
+}
+
 private func collect(_ pipeline: TranscriptionPipeline) async throws -> [CaptionEvent] {
     let stream = try await pipeline.start()
     var events: [CaptionEvent] = []
@@ -131,5 +165,39 @@ private func collect(_ pipeline: TranscriptionPipeline) async throws -> [Caption
         #expect(counts.translate == 0) // never translates in transcribe mode
         #expect(counts.detect == 1)
         #expect(counts.transcribe == 1)
+    }
+
+    @Test func lockedLanguageSkipsDetectionEntirely() async throws {
+        let engine = FakeEngine(english: "ignored", original: "Apa kabar?", language: "id")
+        let pipeline = TranscriptionPipeline(
+            source: ScriptedSource(), engine: engine, task: .transcribe,
+            spokenLanguage: "id", showOriginal: false
+        )
+        let finals = try await collect(pipeline).compactMap { event -> (String, String?)? in
+            if case let .final(text, _, language) = event { return (text, language) }
+            return nil
+        }
+        #expect(finals.count == 1)
+        #expect(finals[0].0 == "Apa kabar?")
+        #expect(finals[0].1 == "id") // reported language is the locked one
+        let counts = await engine.counts
+        // The whole point: a locked language never spends a detection pass.
+        #expect(counts.detect == 0)
+        #expect(counts.transcribe == 1)
+    }
+
+    @Test func autoModeDetectsOnceAndReusesIt() async throws {
+        let engine = FakeEngine(english: "Hello.", original: "Halo.", language: "id")
+        let pipeline = TranscriptionPipeline(
+            source: TwoUtteranceSource(), engine: engine, task: .translate, showOriginal: false
+        )
+        let finals = try await collect(pipeline).filter { event in
+            if case .final = event { return true }
+            return false
+        }
+        #expect(finals.count == 2) // two utterances
+        let counts = await engine.counts
+        // Detect runs on the first final only; the second reuses the cache.
+        #expect(counts.detect == 1)
     }
 }

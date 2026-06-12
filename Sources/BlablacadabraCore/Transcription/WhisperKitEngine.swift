@@ -79,11 +79,13 @@ public actor WhisperKitEngine: TranscriptionEngine {
     /// WhisperKit init can stall indefinitely right after an in-app download
     /// completes (observed: 8+ min at 0% CPU; a fresh init then loads in
     /// seconds). Guard: time the first attempt out and retry once with a
-    /// brand-new init before giving up.
+    /// brand-new init before giving up. A healthy load is seconds, and a stall
+    /// never recovers on its own, so the timeout is short enough to feel like
+    /// recovery rather than a freeze (the old 180s read as "stuck forever").
     private static func loadGuardingAgainstStall(model: String, folder: URL?) async throws -> WhisperKit {
         for attempt in 1...2 {
             do {
-                return try await withTimeout(seconds: 180) {
+                return try await withTimeout(seconds: 25) {
                     try await WhisperKit(WhisperKitConfig(model: model, modelFolder: folder?.path))
                 }
             } catch is LoadStallTimeout {

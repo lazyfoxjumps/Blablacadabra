@@ -352,12 +352,36 @@ struct SettingsView: View {
         section("Speech engine", theme: theme) {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("Spoken language")
+                        .font(AppFont.detail)
+                        .foregroundStyle(theme.secondaryText)
+                    SpokenLanguageMenu(selection: $state.spokenLanguageCode) {
+                        HStack(spacing: 6) {
+                            Text(state.spokenLanguageDisplay)
+                                .font(AppFont.control)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundStyle(theme.accentText)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .strokeBorder(theme.accentText.opacity(0.5), lineWidth: 1)
+                        )
+                    }
+                    Text("Leave it on Auto to detect the language for you. If captions sometimes show the wrong language, pick the one you actually speak and I'll stick to it.")
+                        .font(AppFont.footnote)
+                        .foregroundStyle(theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: 8) {
                     PillPicker(
                         selection: $state.model,
                         options: WhisperKitEngine.availableModels.map { ($0, $0.capitalized) },
                         theme: theme
                     )
-                    Text("Bigger is more accurate, smaller is faster. Base is a good middle.")
+                    Text("Bigger is more accurate, smaller is faster.")
                         .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
                 }

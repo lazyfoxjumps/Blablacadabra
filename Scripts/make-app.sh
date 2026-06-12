@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="0.5.2" # Bilingual captions (original above translation) + correct detected source language ("Japanese → English (AU)")
+VERSION="0.6.0" # Spoken-language picker (lock to skip misdetection + speed), detection caching, restart freeze + crash fixes, faster load-stall recovery
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra

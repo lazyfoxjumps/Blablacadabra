@@ -53,7 +53,8 @@ struct OverlayView: View {
             Text(state.statusText)
                 .font(AppFont.nunito(12, .semibold))
                 .lineLimit(1)
-            Spacer(minLength: 16)
+            languageChip(textColor: textColor)
+            Spacer(minLength: 12)
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 12, weight: .semibold))
                 .help("Drag anywhere on the card to move it")
@@ -79,6 +80,30 @@ struct OverlayView: View {
             }
         }
         .foregroundStyle(textColor.color.opacity(0.75))
+    }
+
+    /// Clickable language chip: shows what's being heard (or the locked
+    /// language) and opens a dropdown to pick the spoken language right from the
+    /// caption card. Locking a language stops misdetection on the spot.
+    private func languageChip(textColor: RGB) -> some View {
+        SpokenLanguageMenu(selection: $state.spokenLanguageCode) {
+            HStack(spacing: 3) {
+                Image(systemName: "globe")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(state.spokenLanguageDisplay)
+                    .font(AppFont.nunito(11, .semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .padding(.vertical, 2)
+            .padding(.horizontal, 6)
+            .background(Capsule().fill(textColor.color.opacity(0.12)))
+            .contentShape(Capsule())
+        }
+        .foregroundStyle(textColor.color.opacity(0.8))
+        .help("Pick the spoken language, or leave it on Auto")
+        .accessibilityLabel("Spoken language: \(state.spokenLanguageDisplay)")
     }
 
     // MARK: Captions

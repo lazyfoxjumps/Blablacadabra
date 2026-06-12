@@ -58,6 +58,19 @@ final class AppState: ObservableObject {
     private var pipeline: TranscriptionPipeline?
     private var sessionTask: Task<Void, Never>?
     private var sessionGeneration = 0
+    /// The in-flight teardown of the previous session. A new session awaits it
+    /// before creating its capture, so AVAudioEngine/SCStream never overlap
+    /// (overlapping start/stop throws ObjC assertions that crash the app).
+    private var teardownTask: Task<Void, Never>?
+    /// Debounce for rapid setting changes (flipping model/source pills fast):
+    /// coalesce into one restart instead of spawning overlapping sessions.
+    private var restartTask: Task<Void, Never>?
+    /// The prepared engine is kept alive across restarts so a source change or
+    /// a pause/resume reuses the already-loaded model (near-instant) instead of
+    /// reloading it every time (slow, and re-exposes the WhisperKit load stall).
+    /// Replaced only when the model itself changes.
+    private var preparedEngine: WhisperKitEngine?
+    private var preparedModel: String?
 
     // MARK: Apple accessibility (system-wide settings, reflected live)
 
@@ -95,6 +108,22 @@ final class AppState: ObservableObject {
             // Turning translate off clears the "from" language; turning it on
             // waits for the next decode to detect it.
             detectedLanguageCode = nil
+        }
+    }
+    /// Locked spoken language (ISO 639-1), or nil for auto-detect. When set,
+    /// the engine never runs language detection: it forces this language on
+    /// every decode. This is the fix for an English speaker getting random
+    /// Japanese/Russian captions, and it shaves a model pass for speed. Applies
+    /// mid-stream, no restart needed.
+    @Published var spokenLanguageCode: String? {
+        didSet {
+            defaults.set(spokenLanguageCode, forKey: "spokenLanguage")
+            if let pipeline {
+                Task { await pipeline.setSpokenLanguage(spokenLanguageCode) }
+            }
+            // The chip should reflect the locked choice immediately, not the
+            // stale auto-detected one.
+            if spokenLanguageCode != nil { detectedLanguageCode = nil }
         }
     }
     /// Bilingual captions: show the original language above the English while
@@ -197,6 +226,8 @@ final class AppState: ObservableObject {
     init() {
         sourceChoice = CaptureSourceChoice(rawValue: defaults.string(forKey: "sourceChoice") ?? "") ?? .system
         translate = defaults.bool(forKey: "translate")
+        // Absent key = nil = auto-detect (the default).
+        spokenLanguageCode = defaults.string(forKey: "spokenLanguage")
         model = defaults.string(forKey: "model") ?? WhisperKitEngine.defaultModel
         let storedLocale = EnglishLocale(rawValue: defaults.string(forKey: "captionLocale") ?? "") ?? .us
         captionLocale = storedLocale
@@ -256,6 +287,14 @@ final class AppState: ObservableObject {
 
     func startCaptions() {
         guard !isRunning else { return }
+        launchSession()
+    }
+
+    /// Starts a session unconditionally (the public `startCaptions` guards
+    /// against double-start; restart and resume come straight here). Reuses the
+    /// prepared engine when the model is unchanged, and waits for any in-flight
+    /// teardown so the old capture is fully gone before the new one opens.
+    private func launchSession() {
         sessionGeneration += 1
         let generation = sessionGeneration
         startingNeedsDownload = !WhisperKitEngine.isModelCached(model)
@@ -264,14 +303,26 @@ final class AppState: ObservableObject {
         partial = nil
         detectedLanguageCode = nil
 
+        // Build a fresh engine only when the model changed; otherwise keep the
+        // loaded one (instant restart, no reload stall).
+        if preparedModel != model || preparedEngine == nil {
+            preparedEngine = WhisperKitEngine(model: model)
+            preparedModel = model
+        }
+        let engine = preparedEngine!
+        let pendingTeardown = teardownTask
+
         sessionTask = Task { [weak self] in
             guard let self else { return }
+            // Never overlap captures: let the previous session's stop() finish.
+            await pendingTeardown?.value
+            guard self.sessionGeneration == generation else { return }
             do {
                 let source = self.makeSource()
-                let engine = WhisperKitEngine(model: self.model)
                 // Honest waiting: percentage while downloading, and the
                 // status flips to "warming up" the moment the download ends
-                // and the CoreML compile starts.
+                // and the CoreML compile starts. A reused, already-loaded
+                // engine no-ops prepare() and never fires this.
                 await engine.setPrepareHandler { [weak self] event in
                     Task { @MainActor in
                         guard let self, self.sessionGeneration == generation else { return }
@@ -289,6 +340,7 @@ final class AppState: ObservableObject {
                     source: source,
                     engine: engine,
                     task: self.translate ? .translate : .transcribe,
+                    spokenLanguage: self.spokenLanguageCode,
                     showOriginal: self.showOriginal
                 )
                 self.pipeline = pipeline
@@ -346,15 +398,25 @@ final class AppState: ObservableObject {
         sessionTask = nil
         downloadProgress = nil
         phase = newPhase
-        if let pipeline {
-            Task { await pipeline.stop() }
-        }
+        // Track the teardown so the next session can await it (no overlap).
+        teardownTask = Task { if let pipeline { await pipeline.stop() } }
     }
 
+    /// A model or source change while running restarts the session. Debounced
+    /// so flipping pills quickly coalesces into one restart, and the teardown
+    /// is awaited (via launchSession) before the new capture opens, so audio
+    /// engines never overlap. NOTE: this no longer routes through the guarded
+    /// `startCaptions()` (which would early-return because `.starting` counts as
+    /// running, leaving the app stuck on "Warming up" forever, the old bug).
     private func restartIfRunning() {
         guard isRunning else { return }
-        endSession(newPhase: .starting)
-        startCaptions()
+        restartTask?.cancel()
+        restartTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self, !Task.isCancelled, self.isRunning else { return }
+            self.endSession(newPhase: .starting)
+            self.launchSession()
+        }
     }
 
     private func makeSource() -> AudioSource {
@@ -384,12 +446,26 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Remembers the detected source language while translating, so the status
-    /// can read "Indonesian -> English (US)". Only updates when it actually
-    /// changes (a quiet decode reporting the same language shouldn't churn).
+    /// Remembers the detected source language so the status can read
+    /// "Indonesian -> English (US)" while translating and the language chip can
+    /// show what's being heard even in plain transcription. Only updates on an
+    /// actual change (a quiet decode reporting the same language shouldn't
+    /// churn), and never overrides a manually locked language.
     private func noteDetectedLanguage(_ code: String?) {
-        guard translate, let code, code != detectedLanguageCode else { return }
+        guard spokenLanguageCode == nil, let code, code != detectedLanguageCode else { return }
         detectedLanguageCode = code
+    }
+
+    /// What the language chip shows: the locked language by name, or in auto
+    /// mode "Auto" (with the detected language appended once it's known).
+    var spokenLanguageDisplay: String {
+        if let code = spokenLanguageCode {
+            return SpokenLanguage.displayName(forCode: code) ?? "Auto"
+        }
+        if let detected = SpokenLanguage.displayName(forCode: detectedLanguageCode) {
+            return "Auto · \(detected)"
+        }
+        return "Auto"
     }
 
     private static func friendlyMessage(for error: Error) -> String {
