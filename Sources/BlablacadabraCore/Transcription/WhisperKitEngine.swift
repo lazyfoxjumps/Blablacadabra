@@ -19,6 +19,23 @@ public actor WhisperKitEngine: TranscriptionEngine {
         self.model = model
     }
 
+    /// Whether this model is already on disk (WhisperKit caches under
+    /// ~/Documents/huggingface). A missing or partial cache means `prepare()`
+    /// will download first, which can take minutes on the bigger models; the
+    /// UI uses this to say so instead of a vague "warming up".
+    public static func isModelCached(_ model: String) -> Bool {
+        guard let documents = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first else { return false }
+        let modelDir = documents.appendingPathComponent(
+            "huggingface/models/argmaxinc/whisperkit-coreml/openai_whisper-\(model)"
+        )
+        // The decoder weights land last; their compiled model is the
+        // "download actually finished" marker.
+        let decoder = modelDir.appendingPathComponent("TextDecoder.mlmodelc/coremldata.bin")
+        return FileManager.default.fileExists(atPath: decoder.path)
+    }
+
     public func prepare() async throws {
         guard whisper == nil else { return }
         do {
@@ -40,10 +57,21 @@ public actor WhisperKitEngine: TranscriptionEngine {
             withoutTimestamps: true
         )
         let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
-        let text = results.map(\.text)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = Self.cleaned(
+            results.map(\.text).joined(separator: " ")
+        )
         return Self.isNoise(text) ? "" : text
+    }
+
+    /// Whisper opens chunks that start mid-conversation with a dialog dash
+    /// ("- I'm going to pause."); as a live caption line that reads like a
+    /// stage direction, so the leading dash goes.
+    static func cleaned(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let first = text.first, first == "-" || first == "\u{2013}" || first == "\u{2014}" {
+            text = String(text.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }
+        return text
     }
 
     /// Whisper labels non-speech with bracketed annotations ("[BLANK_AUDIO]",

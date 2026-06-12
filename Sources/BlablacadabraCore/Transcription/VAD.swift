@@ -22,6 +22,11 @@ public struct VADConfiguration: Sendable {
     public var minSpeechDuration: Double = 0.3
     /// Trailing silence kept on a finalized utterance.
     public var trailingSilenceKept: Double = 0.2
+    /// When an utterance hits `maxUtteranceDuration` mid-speech, the cut lands
+    /// on the quietest frame within this much trailing audio (instead of dead
+    /// at the limit, which chops words in half). The audio after the cut seeds
+    /// the next utterance, so nothing is lost across the seam.
+    public var forcedCutSearchWindow: Double = 2.0
 
     public init() {}
 }
@@ -48,6 +53,7 @@ public struct VoiceChunker {
     private let partialIntervalFrames: Int
     private let minSpeechFrames: Int
     private let trailingKeptSamples: Int
+    private let forcedCutSearchFrames: Int
 
     private var pending: [Float] = []
     private var preRoll: [Float] = []
@@ -67,6 +73,7 @@ public struct VoiceChunker {
         partialIntervalFrames = max(1, Int(config.partialInterval / config.frameDuration))
         minSpeechFrames = max(1, Int(config.minSpeechDuration / config.frameDuration))
         trailingKeptSamples = Int(config.trailingSilenceKept * rate)
+        forcedCutSearchFrames = max(1, Int(config.forcedCutSearchWindow / config.frameDuration))
     }
 
     /// Feeds new samples in; returns zero or more chunk events.
@@ -121,8 +128,11 @@ public struct VoiceChunker {
         }
 
         let utteranceFrames = utterance.count / frameSize
-        if trailingSilenceFrames >= silenceFramesToFinalize || utteranceFrames >= maxUtteranceFrames {
+        if trailingSilenceFrames >= silenceFramesToFinalize {
             return finalize()
+        }
+        if utteranceFrames >= maxUtteranceFrames {
+            return forcedFinalize()
         }
         if isSpeech, framesSinceLastPartial >= partialIntervalFrames {
             framesSinceLastPartial = 0
@@ -137,6 +147,57 @@ public struct VoiceChunker {
         let trailingSilenceSamples = trailingSilenceFrames * frameSize
         let trim = max(0, trailingSilenceSamples - trailingKeptSamples)
         let chunk = Array(utterance.dropLast(trim))
+        return .final(chunk)
+    }
+
+    /// The utterance ran into the max-duration wall mid-speech. Cutting dead
+    /// at the limit halves a word, and Whisper garbles half-words on both
+    /// sides of the seam. Instead: cut on the quietest frame in the trailing
+    /// search window and keep everything after the cut as the start of the
+    /// next utterance.
+    private mutating func forcedFinalize() -> Event? {
+        guard speechFramesInUtterance >= minSpeechFrames else {
+            reset()
+            return nil
+        }
+
+        let totalFrames = utterance.count / frameSize
+        let searchFrames = min(forcedCutSearchFrames, totalFrames - 1)
+        var quietestFrame = totalFrames - 1
+        var quietestRMS = Float.greatestFiniteMagnitude
+        for index in (totalFrames - searchFrames)..<totalFrames {
+            let start = index * frameSize
+            let frame = Array(utterance[start..<(start + frameSize)])
+            let energy = rms(frame)
+            if energy < quietestRMS {
+                quietestRMS = energy
+                quietestFrame = index
+            }
+        }
+
+        let cut = (quietestFrame + 1) * frameSize
+        let chunk = Array(utterance.prefix(cut))
+        let remainder = Array(utterance.suffix(from: min(cut, utterance.count)))
+
+        // Stay in speaking state, seeded with the remainder; recount its
+        // speech/silence frames so finalize bookkeeping starts honest.
+        utterance = remainder
+        speaking = true
+        framesSinceLastPartial = 0
+        speechFramesInUtterance = 0
+        trailingSilenceFrames = 0
+        let remainderFrames = remainder.count / frameSize
+        for index in 0..<remainderFrames {
+            let start = index * frameSize
+            let frame = Array(remainder[start..<(start + frameSize)])
+            if rms(frame) >= config.energyThreshold {
+                speechFramesInUtterance += 1
+                trailingSilenceFrames = 0
+            } else {
+                trailingSilenceFrames += 1
+            }
+        }
+
         return .final(chunk)
     }
 

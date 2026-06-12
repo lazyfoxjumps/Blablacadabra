@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="0.3.1" # Phase 3 + mockup-match UI pass
+VERSION="0.4.0" # Phase 4: live-verified, VAD seam fix, honest download status
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra

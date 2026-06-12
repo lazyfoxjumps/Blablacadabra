@@ -34,6 +34,9 @@ final class AppState: ObservableObject {
     // MARK: Session
 
     @Published private(set) var phase: SessionPhase = .idle
+    /// True while `.starting` involves a first-time model download (so the
+    /// status can be honest about why the wait is long).
+    @Published private(set) var startingNeedsDownload = false
     @Published private(set) var lines: [String] = []
     @Published private(set) var partial: String?
     @Published private(set) var lastEventAt: Date?
@@ -169,6 +172,7 @@ final class AppState: ObservableObject {
         guard !isRunning else { return }
         sessionGeneration += 1
         let generation = sessionGeneration
+        startingNeedsDownload = !WhisperKitEngine.isModelCached(model)
         phase = .starting
         partial = nil
 
@@ -282,7 +286,9 @@ final class AppState: ObservableObject {
         case .idle:
             return "Captions off"
         case .starting:
-            return "Warming up · getting the model ready"
+            return startingNeedsDownload
+                ? "Downloading the speech model · first time only, this can take a few minutes"
+                : "Warming up · getting the model ready"
         case .listening:
             return translate
                 ? "Translating to English · \(sourceChoice.label)"
