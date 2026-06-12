@@ -28,6 +28,9 @@ struct SettingsView: View {
                 }
                 .padding(28)
             }
+            // Belt and suspenders with makeFirstResponder(nil): always open
+            // at the top, never scrolled to whatever got focus.
+            .defaultScrollAnchor(.top)
         }
         .frame(width: 520, height: 660)
         .background(theme.deepSurface)
@@ -48,7 +51,7 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 28)
         .padding(.top, 36)
-        .padding(.bottom, 4)
+        .padding(.bottom, 14)
     }
 
     // MARK: Preview

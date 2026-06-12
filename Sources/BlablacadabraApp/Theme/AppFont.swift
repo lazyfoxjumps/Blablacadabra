@@ -19,7 +19,8 @@ enum AppFont {
     }
 
     // Headings (Jua)
-    static let tagline = jua(31)
+    /// The big lowercase "blablacadabra" wordmark on the welcome card.
+    static let appName = jua(31)
     static let windowTitle = jua(20)
     static let sectionHeading = jua(19)
     static let stepTitle = jua(18)
