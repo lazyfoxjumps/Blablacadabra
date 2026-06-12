@@ -1,6 +1,7 @@
 import AppKit
 import BlablacadabraCore
 import Combine
+import ServiceManagement
 import SwiftUI
 
 enum CaptureSourceChoice: String, CaseIterable, Identifiable {
@@ -123,6 +124,29 @@ final class AppState: ObservableObject {
         didSet { defaults.set(hasOnboarded, forKey: "hasOnboarded") }
     }
 
+    /// Launch-at-login, backed by SMAppService (the system is the source of
+    /// truth, not UserDefaults; the user can also flip it in System Settings
+    /// > General > Login Items and we just reflect it).
+    @Published var launchAtLogin: Bool {
+        didSet {
+            guard !revertingLaunchAtLogin, launchAtLogin != (SMAppService.mainApp.status == .enabled) else { return }
+            do {
+                if launchAtLogin {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+            } catch {
+                // Registration can fail for an unbundled dev build; reflect
+                // reality instead of showing a toggle that lies.
+                revertingLaunchAtLogin = true
+                launchAtLogin = SMAppService.mainApp.status == .enabled
+                revertingLaunchAtLogin = false
+            }
+        }
+    }
+    private var revertingLaunchAtLogin = false
+
     init() {
         sourceChoice = CaptureSourceChoice(rawValue: defaults.string(forKey: "sourceChoice") ?? "") ?? .system
         translate = defaults.bool(forKey: "translate")
@@ -140,6 +164,7 @@ final class AppState: ObservableObject {
         customBackgroundHex = defaults.string(forKey: "customBackgroundHex") ?? "#1B2632"
         useLocationForSun = defaults.bool(forKey: "useLocationForSun")
         hasOnboarded = defaults.bool(forKey: "hasOnboarded")
+        launchAtLogin = SMAppService.mainApp.status == .enabled
 
         isDark = resolveIsDark()
 

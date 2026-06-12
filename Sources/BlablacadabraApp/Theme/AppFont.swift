@@ -19,10 +19,10 @@ enum AppFont {
     }
 
     // Headings (Jua)
-    static let tagline = jua(26)
-    static let windowTitle = jua(17)
-    static let sectionHeading = jua(16)
-    static let stepTitle = jua(15)
+    static let tagline = jua(31)
+    static let windowTitle = jua(20)
+    static let sectionHeading = jua(19)
+    static let stepTitle = jua(18)
 
     // Body (Nunito)
     static let body = nunito(13)

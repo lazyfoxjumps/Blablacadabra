@@ -74,23 +74,26 @@ struct CaptionPreset: Identifiable, Equatable {
     static let theme = CaptionPreset(id: "theme", name: "Theme default", text: nil, background: nil)
     static let custom = CaptionPreset(id: "custom", name: "Custom", text: nil, background: nil)
 
+    /// One swatch per mood, all MP072, all >= 7:1 contrast so every preset
+    /// passes the checker comfortably: soft dark, ember dark, paper light,
+    /// flame card, stone card. Removed ids quietly fall back to theme default.
     static let vetted: [CaptionPreset] = [
         .theme,
-        CaptionPreset(
-            id: "palladian-abyssal", name: "Palladian on Abyssal",
-            text: RGB(hexString: "#EEE9DF"), background: RGB(hexString: "#1B2632")),
         CaptionPreset(
             id: "oatmeal-abyssal", name: "Oatmeal on Abyssal",
             text: RGB(hexString: "#C9C1B1"), background: RGB(hexString: "#1B2632")),
         CaptionPreset(
-            id: "palladian-blue", name: "Palladian on Blue Fantastic",
-            text: RGB(hexString: "#EEE9DF"), background: RGB(hexString: "#2C3B4D")),
+            id: "flame-abyssal", name: "Burning Flame on Abyssal",
+            text: RGB(hexString: "#FFB162"), background: RGB(hexString: "#1B2632")),
         CaptionPreset(
             id: "blue-paper", name: "Blue Fantastic on warm paper",
             text: RGB(hexString: "#2C3B4D"), background: RGB(hexString: "#F7F4EC")),
         CaptionPreset(
-            id: "abyssal-palladian", name: "Abyssal on Palladian",
-            text: RGB(hexString: "#1B2632"), background: RGB(hexString: "#EEE9DF")),
+            id: "abyssal-flame", name: "Abyssal on Burning Flame",
+            text: RGB(hexString: "#1B2632"), background: RGB(hexString: "#FFB162")),
+        CaptionPreset(
+            id: "abyssal-oatmeal", name: "Abyssal on Oatmeal",
+            text: RGB(hexString: "#1B2632"), background: RGB(hexString: "#C9C1B1")),
     ]
 }
 

@@ -66,6 +66,7 @@ struct OnboardingView: View {
             Text("Now you hear it, now you read it.")
                 .font(AppFont.tagline)
                 .foregroundStyle(theme.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
             Text("Live captions for everything on your Mac. Two quick steps, then you're done. No account, no setup maze.")
                 .font(AppFont.body)
                 .foregroundStyle(theme.secondaryText)

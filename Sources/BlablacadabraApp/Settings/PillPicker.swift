@@ -8,6 +8,9 @@ struct PillPicker<Value: Hashable>: View {
     @Binding var selection: Value
     let options: [(value: Value, label: String)]
     let theme: ResolvedTheme
+    /// Per-option label font (the font picker shows each face in itself);
+    /// nil means the standard control font.
+    var fontFor: ((Value) -> Font)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -23,7 +26,7 @@ struct PillPicker<Value: Hashable>: View {
             selection = value
         } label: {
             Text(label)
-                .font(AppFont.control)
+                .font(fontFor?(value) ?? AppFont.control)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .foregroundStyle(selected ? theme.accentText : theme.secondaryText)

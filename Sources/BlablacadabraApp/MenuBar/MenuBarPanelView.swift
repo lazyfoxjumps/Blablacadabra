@@ -12,6 +12,21 @@ struct MenuBarPanelView: View {
         let theme = state.theme
 
         VStack(alignment: .leading, spacing: 16) {
+            // Brand row: icon placeholder (real app icon later) + wordmark.
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(theme.deepSurface)
+                    .frame(width: 22, height: 22)
+                    .overlay(
+                        Image(systemName: "captions.bubble.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.burningFlame)
+                    )
+                Text("blablacadabra")
+                    .font(AppFont.jua(15))
+                    .foregroundStyle(theme.primaryText)
+            }
+
             // Status row.
             HStack(spacing: 8) {
                 Image(systemName: state.statusSymbol)
@@ -62,7 +77,10 @@ struct MenuBarPanelView: View {
                     PillPicker(
                         selection: $state.sourceChoice,
                         options: CaptureSourceChoice.allCases.map { ($0, $0.label) },
-                        theme: theme
+                        theme: theme,
+                        // "System audio" needs the smaller size to breathe at
+                        // this panel width.
+                        fontFor: { _ in AppFont.nunito(11, .semibold) }
                     )
                 }
 

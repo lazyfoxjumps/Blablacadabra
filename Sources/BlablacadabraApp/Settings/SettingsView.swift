@@ -29,7 +29,7 @@ struct SettingsView: View {
                 .padding(28)
             }
         }
-        .frame(width: 520, height: 660)
+        .frame(width: 520, height: 1520) // TEMP screenshot height, restore 660
         .background(theme.deepSurface)
         .preferredColorScheme(theme.colorScheme)
         .onAppear {
@@ -41,7 +41,7 @@ struct SettingsView: View {
     /// In-card window header (the window's own title bar is transparent).
     private func headerBar(theme: ResolvedTheme) -> some View {
         HStack(spacing: 10) {
-            Text("Blablacadabra settings")
+            Text("Settings")
                 .font(AppFont.windowTitle)
                 .foregroundStyle(theme.primaryText)
             Spacer()
@@ -245,7 +245,8 @@ struct SettingsView: View {
                     PillPicker(
                         selection: $state.fontChoice,
                         options: FontChoice.allCases.map { ($0, $0.shortLabel) },
-                        theme: theme
+                        theme: theme,
+                        fontFor: { $0.font(size: 12.5, weight: .semibold) }
                     )
                     if !state.fontChoice.isInstalled {
                         Text("\(state.fontChoice.label) isn't installed on this Mac yet, so I'm using the system font for now. Install it and I'll switch over.")
@@ -295,6 +296,15 @@ struct SettingsView: View {
                     behaviorLabel(
                         "Click through the captions",
                         detail: "Clicks pass straight through the card. Use the menu bar or the shortcut to pause.",
+                        theme: theme
+                    )
+                }
+                .toggleStyle(FlameToggleStyle())
+
+                Toggle(isOn: $state.launchAtLogin) {
+                    behaviorLabel(
+                        "Start when I log in",
+                        detail: "I'll wait quietly in the menu bar. Captions only start when you ask.",
                         theme: theme
                     )
                 }
