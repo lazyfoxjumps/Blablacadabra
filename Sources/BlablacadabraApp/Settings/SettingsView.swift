@@ -29,7 +29,7 @@ struct SettingsView: View {
                 .padding(28)
             }
         }
-        .frame(width: 520, height: 1520) // TEMP screenshot height, restore 660
+        .frame(width: 520, height: 660)
         .background(theme.deepSurface)
         .preferredColorScheme(theme.colorScheme)
         .onAppear {
