@@ -7,10 +7,50 @@ import WhisperKit
 /// An actor so concurrent callers serialize; WhisperKit runs one decode at a
 /// time anyway, and the pipeline already coalesces stale partials upstream.
 public actor WhisperKitEngine: TranscriptionEngine {
-    /// Model sizes worth offering in the UI, fastest first. Any other
-    /// WhisperKit model name also works via `init(model:)`.
-    public static let availableModels = ["tiny", "base", "small", "medium"]
-    public static let defaultModel = "base"
+    /// WhisperKit's variant name for OpenAI's large-v3-turbo (released
+    /// 2024-09-30): the most accurate model we offer, at ~632 MB. The exact
+    /// folder name is pinned (rather than a loose "turbo") so WhisperKit's
+    /// download glob resolves to exactly one variant, and so `cachedModelFolder`
+    /// matches the on-disk `openai_whisper-…` path.
+    public static let turboModel = "large-v3-v20240930_turbo_632MB"
+
+    /// Model stops offered by the UI slider, fastest/smallest first. Any other
+    /// WhisperKit model name also works via `init(model:)`. `base` was dropped
+    /// in 0.6.1 (small is the new low end); see `migratedModel`.
+    public static let availableModels = ["tiny", "small", "medium", turboModel]
+    public static let defaultModel = "small"
+
+    /// Plain-language name for a model id (the turbo id is unreadable, and
+    /// `capitalized` mangles it). Used by every model control.
+    public static func displayName(for model: String) -> String {
+        switch model {
+        case "tiny": return "Tiny"
+        case "small": return "Small"
+        case "medium": return "Medium"
+        case turboModel: return "Turbo"
+        default: return model.capitalized
+        }
+    }
+
+    /// Map a persisted model id to a currently-offered one. `base` (the old
+    /// default, now removed) and anything else unrecognized resolve to the
+    /// default so the picker is never empty or stuck on a gone variant.
+    public static func migratedModel(fromStored stored: String?) -> String {
+        guard let stored, availableModels.contains(stored) else { return defaultModel }
+        return stored
+    }
+
+    /// Slider index -> model id (clamped). Pairs with `index(of:)` for a
+    /// 0...availableModels.count-1 discrete slider.
+    public static func model(atIndex index: Int) -> String {
+        let clamped = max(0, min(availableModels.count - 1, index))
+        return availableModels[clamped]
+    }
+
+    /// Model id -> slider index (default model's index for anything unknown).
+    public static func index(of model: String) -> Int {
+        availableModels.firstIndex(of: model) ?? (availableModels.firstIndex(of: defaultModel) ?? 0)
+    }
 
     public let model: String
     private var whisper: WhisperKit?

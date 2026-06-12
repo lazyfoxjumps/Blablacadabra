@@ -50,6 +50,12 @@ public actor TranscriptionPipeline {
     /// feeds level meters and debug dumps without touching the caption stream.
     private var audioTap: (@Sendable ([Float]) -> Void)?
 
+    /// Linear input gain applied to every sample before VAD, the engine, and
+    /// the tap. 1.0 = unchanged; >1 boosts soft voices so the VAD catches them
+    /// and the meter shows them. Hard-clamped to [-1, 1] after scaling so a
+    /// heavy boost distorts gently instead of wrapping. Settable mid-stream.
+    private var inputGain: Float
+
     private var continuation: AsyncStream<CaptionEvent>.Continuation?
     private var pumpTask: Task<Void, Never>?
     private var latestPartial: [Float]?
@@ -64,6 +70,7 @@ public actor TranscriptionPipeline {
         task: TranscriptionTask = .transcribe,
         spokenLanguage: String? = nil,
         showOriginal: Bool = false,
+        inputGain: Float = 1,
         vadConfig: VADConfiguration = VADConfiguration()
     ) {
         self.source = source
@@ -71,6 +78,7 @@ public actor TranscriptionPipeline {
         self.task = task
         self.spokenLanguage = (spokenLanguage?.isEmpty == true) ? nil : spokenLanguage
         self.showOriginal = showOriginal
+        self.inputGain = max(0.1, inputGain)
         self.vadConfig = vadConfig
     }
 
@@ -96,6 +104,11 @@ public actor TranscriptionPipeline {
         audioTap = tap
     }
 
+    /// Live input gain (1.0 = unchanged). Applies from the next buffer.
+    public func setInputGain(_ gain: Float) {
+        inputGain = max(0.1, gain)
+    }
+
     /// Starts capture, loads the engine, and returns the caption stream.
     /// The stream finishes after `stop()` once queued finals have drained.
     ///
@@ -116,7 +129,11 @@ public actor TranscriptionPipeline {
             var chunker = VoiceChunker(config: vadConfig)
             for await buffer in audio {
                 guard !Task.isCancelled else { break }
-                let samples = Self.floatSamples(of: buffer)
+                var samples = Self.floatSamples(of: buffer)
+                let gain = inputGain
+                if gain != 1 {
+                    samples = samples.map { max(-1, min(1, $0 * gain)) }
+                }
                 audioTap?(samples)
                 for event in chunker.process(samples) {
                     enqueue(event)

@@ -7,6 +7,13 @@ struct NDSlider: View {
     let range: ClosedRange<Double>
     var step: Double = 1
     let theme: ResolvedTheme
+    /// Fires true when a drag begins and false when it ends. Lets a caller bind
+    /// `value` to a live display state and only commit something expensive (a
+    /// model download) on release. Default no-op, so existing sliders are
+    /// unaffected.
+    var onEditingChanged: (Bool) -> Void = { _ in }
+
+    @State private var editing = false
 
     private let trackHeight: Double = 8
     private let knobSize: Double = 22
@@ -35,9 +42,17 @@ struct NDSlider: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
+                        if !editing {
+                            editing = true
+                            onEditingChanged(true)
+                        }
                         let fraction = min(max((drag.location.x - knobSize / 2) / (width - knobSize), 0), 1)
                         let raw = range.lowerBound + fraction * (range.upperBound - range.lowerBound)
                         value = (raw / step).rounded() * step
+                    }
+                    .onEnded { _ in
+                        editing = false
+                        onEditingChanged(false)
                     }
             )
         }

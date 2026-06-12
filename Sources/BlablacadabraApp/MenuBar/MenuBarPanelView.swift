@@ -102,8 +102,9 @@ struct MenuBarPanelView: View {
                         .foregroundStyle(theme.secondaryText)
                     PillPicker(
                         selection: $state.model,
-                        options: WhisperKitEngine.availableModels.map { ($0, $0.capitalized) },
-                        theme: theme
+                        options: WhisperKitEngine.availableModels.map { ($0, WhisperKitEngine.displayName(for: $0)) },
+                        theme: theme,
+                        fontFor: { _ in AppFont.nunito(11, .semibold) }
                     )
                     Text("Bigger is more accurate, smaller is faster.")
                         .font(AppFont.footnote)

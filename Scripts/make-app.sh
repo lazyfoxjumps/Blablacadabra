@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="0.6.0" # Spoken-language picker (lock to skip misdetection + speed), detection caching, restart freeze + crash fixes, faster load-stall recovery
+VERSION="0.6.1" # Audio settings section (mic device picker, capture-health warning, auto-follow notice, live input level meter, input boost) + model slider (tiny/small/medium/turbo, base->small migration)
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra

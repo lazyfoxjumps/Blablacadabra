@@ -10,6 +10,10 @@ struct SettingsView: View {
     let resetOverlayPosition: () -> Void
     @State private var customText: Color = .white
     @State private var customBackground: Color = .black
+    /// Live model-slider position; commits to `state.model` only on release, so
+    /// dragging across stops never kicks off several downloads.
+    @State private var modelIndex: Double = 0
+    @State private var modelSliderEditing = false
 
     var body: some View {
         let theme = state.theme
@@ -24,6 +28,7 @@ struct SettingsView: View {
                     colors(theme: theme)
                     fontAndPosition(theme: theme)
                     behavior(theme: theme)
+                    audio(theme: theme)
                     engine(theme: theme)
                 }
                 .padding(28)
@@ -38,6 +43,8 @@ struct SettingsView: View {
         .onAppear {
             customText = RGB(hexString: state.customTextHex)?.color ?? .white
             customBackground = RGB(hexString: state.customBackgroundHex)?.color ?? .black
+            modelIndex = Double(WhisperKitEngine.index(of: state.model))
+            state.refreshAudioDevices()
         }
     }
 
@@ -375,16 +382,7 @@ struct SettingsView: View {
                         .foregroundStyle(theme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    PillPicker(
-                        selection: $state.model,
-                        options: WhisperKitEngine.availableModels.map { ($0, $0.capitalized) },
-                        theme: theme
-                    )
-                    Text("Bigger is more accurate, smaller is faster.")
-                        .font(AppFont.footnote)
-                        .foregroundStyle(theme.secondaryText)
-                }
+                modelSlider(theme: theme)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("English")
                         .font(AppFont.detail)
@@ -417,6 +415,190 @@ struct SettingsView: View {
 
     private func localeRow(_ locales: [EnglishLocale]) -> [(value: EnglishLocale, label: String)] {
         locales.map { ($0, $0.shortLabel) }
+    }
+
+    /// Discrete 4-stop model slider. Commits on release (and on VoiceOver
+    /// adjust) so dragging across stops never triggers multiple downloads.
+    private func modelSlider(theme: ResolvedTheme) -> some View {
+        let count = WhisperKitEngine.availableModels.count
+        let currentModel = WhisperKitEngine.model(atIndex: Int(modelIndex))
+        let commit = {
+            let chosen = WhisperKitEngine.model(atIndex: Int(modelIndex))
+            if chosen != state.model { state.model = chosen }
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Speech model")
+                    .font(AppFont.detail)
+                    .foregroundStyle(theme.secondaryText)
+                Spacer()
+                Text(WhisperKitEngine.displayName(for: currentModel))
+                    .font(AppFont.control)
+                    .foregroundStyle(theme.accentText)
+            }
+            NDSlider(
+                value: $modelIndex,
+                range: 0...Double(max(1, count - 1)),
+                step: 1,
+                theme: theme,
+                onEditingChanged: { editing in
+                    modelSliderEditing = editing
+                    if !editing { commit() } // committed on release
+                }
+            )
+            // VoiceOver increment/decrement doesn't drag, so commit those too;
+            // guarded by `modelSliderEditing` so a live drag never commits.
+            .onChange(of: modelIndex) { _, _ in
+                if !modelSliderEditing { commit() }
+            }
+            Text(modelCaption(for: currentModel))
+                .font(AppFont.footnote)
+                .foregroundStyle(theme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func modelCaption(for model: String) -> String {
+        switch model {
+        case "tiny": return "Tiny · fastest, lightest download, least accurate."
+        case "small": return "Small · a good balance, quick to download."
+        case "medium": return "Medium · more accurate, a little slower, bigger download."
+        case WhisperKitEngine.turboModel: return "Turbo · most accurate, biggest download (about 630 MB, first time only)."
+        default: return "Bigger is more accurate, smaller is faster."
+        }
+    }
+
+    // MARK: Audio
+
+    private func audio(theme: ResolvedTheme) -> some View {
+        section("Audio", theme: theme) {
+            VStack(alignment: .leading, spacing: 16) {
+                micDevicePicker(theme: theme)
+                captureHealth(theme: theme)
+                if let notice = state.audioDeviceNotice {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                        Text(notice)
+                    }
+                    .font(AppFont.detail)
+                    .foregroundStyle(theme.accentText)
+                }
+                inputLevelRow(theme: theme)
+                VStack(alignment: .leading, spacing: 8) {
+                    labeledRow("Input boost", detail: gainLabel, theme: theme) {
+                        NDSlider(value: $state.inputGain, range: 1...3, step: 0.1, theme: theme)
+                    }
+                    Text("Turn this up if soft voices are getting missed. Leave it at 1× for normal speech.")
+                        .font(AppFont.footnote)
+                        .foregroundStyle(theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var gainLabel: String {
+        let rounded = (state.inputGain * 10).rounded() / 10
+        return rounded == 1 ? "1× (off)" : "\(rounded)×"
+    }
+
+    private func micDevicePicker(theme: ResolvedTheme) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Microphone")
+                .font(AppFont.detail)
+                .foregroundStyle(theme.secondaryText)
+            Menu {
+                Button {
+                    state.micDeviceUID = nil
+                } label: {
+                    deviceRow("Automatic (follow system)", checked: state.micDeviceUID == nil)
+                }
+                if !state.inputDevices.isEmpty { Divider() }
+                ForEach(state.inputDevices) { device in
+                    Button {
+                        state.micDeviceUID = device.uid
+                    } label: {
+                        deviceRow(device.name, checked: state.micDeviceUID == device.uid)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(micDeviceLabel)
+                        .font(AppFont.control)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(theme.accentText)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(theme.accentText.opacity(0.5), lineWidth: 1)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            Text("Which mic I listen to. Used when you're captioning the microphone or Both.")
+                .font(AppFont.footnote)
+                .foregroundStyle(theme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var micDeviceLabel: String {
+        guard let uid = state.micDeviceUID else { return "Automatic (follow system)" }
+        return state.inputDevices.first { $0.uid == uid }?.name ?? "Automatic (follow system)"
+    }
+
+    @ViewBuilder
+    private func deviceRow(_ title: String, checked: Bool) -> some View {
+        if checked {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
+        }
+    }
+
+    /// System audio is tapped from the whole output mix before the output
+    /// device, so an output picker wouldn't change what's captured (documented
+    /// honestly). Instead, warn when the default output is a known
+    /// capture-breaking virtual device; otherwise a calm all-clear line.
+    private func captureHealth(theme: ResolvedTheme) -> some View {
+        Group {
+            if state.outputIsCaptureBreaking {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text("Your sound is going to \"\(state.defaultOutputName ?? "a virtual device")\", which can stop me from hearing system audio. Switch your output to your speakers or headphones in System Settings > Sound, then start captions again.")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(AppFont.detail)
+                .foregroundStyle(theme.accentText)
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle")
+                    Text("System audio looks good\(state.defaultOutputName.map { " (playing through \($0))" } ?? "").")
+                }
+                .font(AppFont.detail)
+                .foregroundStyle(theme.secondaryText)
+            }
+        }
+    }
+
+    private func inputLevelRow(theme: ResolvedTheme) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Input level")
+                .font(AppFont.detail)
+                .foregroundStyle(theme.secondaryText)
+            InputLevelMeter(monitor: state.levelMonitor, theme: theme)
+            Text(state.isRunning
+                 ? "The bar moves when I hear sound, so you know I'm listening."
+                 : "Start captions to see the level move.")
+                .font(AppFont.footnote)
+                .foregroundStyle(theme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: Section scaffolding

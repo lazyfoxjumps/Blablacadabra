@@ -1,6 +1,7 @@
 import AppKit
 import BlablacadabraCore
 import Combine
+import CoreAudio
 import ServiceManagement
 import SwiftUI
 
@@ -72,6 +73,27 @@ final class AppState: ObservableObject {
     private var preparedEngine: WhisperKitEngine?
     private var preparedModel: String?
 
+    // MARK: Audio devices (for the Audio settings section)
+
+    /// Input devices available to the mic picker, refreshed when Settings opens
+    /// and whenever the default input changes.
+    @Published private(set) var inputDevices: [AudioDevice] = []
+    /// Name of the current default output, and whether it's a known
+    /// capture-breaking virtual device (foxpro), for the capture-health line.
+    @Published private(set) var defaultOutputName: String?
+    @Published private(set) var outputIsCaptureBreaking = false
+    /// A transient line shown when a device auto-switch happens, so the change
+    /// is never silent (ND rule). Cleared after a few seconds.
+    @Published private(set) var audioDeviceNotice: String?
+
+    /// Live input level (0...1) for the meter. Separate object so meter updates
+    /// don't redraw the overlay/panel.
+    let levelMonitor = AudioLevelMonitor()
+
+    private var inputDeviceObserver: DefaultDeviceObserver?
+    private var outputDeviceObserver: DefaultDeviceObserver?
+    private var noticeClearTask: Task<Void, Never>?
+
     // MARK: Apple accessibility (system-wide settings, reflected live)
 
     /// Mirrors System Settings > Accessibility > Display. The app honors
@@ -140,6 +162,25 @@ final class AppState: ObservableObject {
         didSet {
             defaults.set(model, forKey: "model")
             restartIfRunning()
+        }
+    }
+    /// Chosen microphone device uid, or nil to follow the system default
+    /// ("Automatic"). Persisted per-uid so it survives unplug/replug. Only
+    /// matters when the source includes the mic; a change restarts capture.
+    @Published var micDeviceUID: String? {
+        didSet {
+            defaults.set(micDeviceUID, forKey: "micDevice")
+            restartIfRunning()
+        }
+    }
+    /// Linear input gain for soft voices (1.0 = unchanged). Applies live to the
+    /// running pipeline; no restart.
+    @Published var inputGain: Double {
+        didSet {
+            defaults.set(inputGain, forKey: "inputGain")
+            if let pipeline {
+                Task { await pipeline.setInputGain(Float(inputGain)) }
+            }
         }
     }
     /// Display English variant. Whisper has no regional switch, so this is a
@@ -228,7 +269,11 @@ final class AppState: ObservableObject {
         translate = defaults.bool(forKey: "translate")
         // Absent key = nil = auto-detect (the default).
         spokenLanguageCode = defaults.string(forKey: "spokenLanguage")
-        model = defaults.string(forKey: "model") ?? WhisperKitEngine.defaultModel
+        // Migrate the old "base" default (removed in 0.6.1) and any gone
+        // variant to a currently-offered model, so the slider is never empty.
+        model = WhisperKitEngine.migratedModel(fromStored: defaults.string(forKey: "model"))
+        micDeviceUID = defaults.string(forKey: "micDevice")
+        inputGain = defaults.object(forKey: "inputGain") as? Double ?? 1.0
         let storedLocale = EnglishLocale(rawValue: defaults.string(forKey: "captionLocale") ?? "") ?? .us
         captionLocale = storedLocale
         normalizer = SpellingNormalizer(locale: storedLocale)
@@ -273,6 +318,16 @@ final class AppState: ObservableObject {
         }
         LocationProvider.shared.onUpdate = { [weak self] in
             Task { @MainActor in self?.refreshTheme() }
+        }
+
+        refreshAudioDevices()
+        // Surface device auto-switches and refresh the picker / capture-health
+        // line whenever the system default input or output changes.
+        inputDeviceObserver = DefaultDeviceObserver(selector: kAudioHardwarePropertyDefaultInputDevice) { [weak self] in
+            Task { @MainActor in self?.handleDefaultInputChange() }
+        }
+        outputDeviceObserver = DefaultDeviceObserver(selector: kAudioHardwarePropertyDefaultOutputDevice) { [weak self] in
+            Task { @MainActor in self?.refreshAudioDevices() }
         }
     }
 
@@ -341,9 +396,21 @@ final class AppState: ObservableObject {
                     engine: engine,
                     task: self.translate ? .translate : .transcribe,
                     spokenLanguage: self.spokenLanguageCode,
-                    showOriginal: self.showOriginal
+                    showOriginal: self.showOriginal,
+                    inputGain: Float(self.inputGain)
                 )
                 self.pipeline = pipeline
+                // Drive the live input level meter off the (gain-applied) audio
+                // tap. The monitor is its own object so this doesn't churn the
+                // overlay/panel.
+                let monitor = self.levelMonitor
+                await pipeline.setAudioTap { samples in
+                    guard !samples.isEmpty else { return }
+                    var sum: Float = 0
+                    for sample in samples { sum += sample * sample }
+                    let rms = (sum / Float(samples.count)).squareRoot()
+                    Task { @MainActor in monitor.report(rms: rms) }
+                }
                 let stream = try await pipeline.start()
                 guard self.sessionGeneration == generation else { return }
                 self.phase = .listening
@@ -398,6 +465,7 @@ final class AppState: ObservableObject {
         sessionTask = nil
         downloadProgress = nil
         phase = newPhase
+        levelMonitor.reset()
         // Track the teardown so the next session can await it (no overlap).
         teardownTask = Task { if let pipeline { await pipeline.stop() } }
     }
@@ -422,8 +490,39 @@ final class AppState: ObservableObject {
     private func makeSource() -> AudioSource {
         switch sourceChoice {
         case .system: return SystemAudioCapture()
-        case .mic: return MicCapture()
-        case .both: return MixedAudioSource(SystemAudioCapture(), MicCapture())
+        case .mic: return MicCapture(preferredDeviceUID: micDeviceUID)
+        case .both: return MixedAudioSource(SystemAudioCapture(), MicCapture(preferredDeviceUID: micDeviceUID))
+        }
+    }
+
+    // MARK: - Audio devices (Audio settings section)
+
+    /// Re-read the input device list and the default-output capture-health
+    /// state. Called on init, when Settings opens, and on device changes.
+    func refreshAudioDevices() {
+        inputDevices = AudioDevices.inputDevices()
+        let output = AudioDevices.defaultOutputDevice()
+        defaultOutputName = output?.name
+        outputIsCaptureBreaking = output.map(AudioDevices.isCaptureBreaking) ?? false
+    }
+
+    /// Default input device changed under us. Refresh the list, and if we're
+    /// following the system default (mic in use, no specific device pinned),
+    /// surface a calm "Switched to <name>" notice so it's never silent.
+    private func handleDefaultInputChange() {
+        refreshAudioDevices()
+        guard micDeviceUID == nil, sourceChoice != .system,
+              let name = AudioDevices.defaultInputDevice()?.name else { return }
+        showAudioDeviceNotice("Switched to \(name)")
+    }
+
+    private func showAudioDeviceNotice(_ text: String) {
+        audioDeviceNotice = text
+        noticeClearTask?.cancel()
+        noticeClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.audioDeviceNotice = nil
         }
     }
 

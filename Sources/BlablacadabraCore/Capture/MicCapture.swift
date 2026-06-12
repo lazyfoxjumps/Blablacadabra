@@ -1,4 +1,6 @@
+import AudioToolbox
 import AVFoundation
+import CoreAudio
 
 /// Optional second audio source: the microphone, for captioning in-person
 /// speech. Taps `AVAudioEngine`'s input node and emits 16 kHz mono Float32.
@@ -20,7 +22,14 @@ public final class MicCapture: AudioSource {
     private var configObserver: (any NSObjectProtocol)?
     private var running = false
 
-    public init() {}
+    /// A specific input device to bind to (by uid), or nil to follow the system
+    /// default. When the chosen device is gone (unplugged), we fall back to the
+    /// default rather than starving on nothing.
+    private let preferredDeviceUID: String?
+
+    public init(preferredDeviceUID: String? = nil) {
+        self.preferredDeviceUID = preferredDeviceUID
+    }
 
     public func start() async throws -> AsyncStream<AVAudioPCMBuffer> {
         try queue.sync {
@@ -52,6 +61,23 @@ public final class MicCapture: AudioSource {
     private func startEngineLocked() throws {
         let engine = AVAudioEngine()
         let input = engine.inputNode
+        // Bind a specific input device if the user picked one. Must happen
+        // before reading the input format / starting, on the inputNode's
+        // underlying audio unit. A missing uid silently leaves the default in
+        // place (graceful fallback).
+        if let uid = preferredDeviceUID,
+           let deviceID = AudioDevices.deviceID(forUID: uid),
+           let unit = input.audioUnit {
+            var device = deviceID
+            AudioUnitSetProperty(
+                unit,
+                kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global,
+                0,
+                &device,
+                UInt32(MemoryLayout<AudioDeviceID>.size)
+            )
+        }
         let nativeFormat = input.inputFormat(forBus: 0)
         guard nativeFormat.sampleRate > 0,
               let converter = PipelineFormatConverter(from: nativeFormat) else {
