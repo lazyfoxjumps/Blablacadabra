@@ -8,7 +8,8 @@ import Foundation
 
 var args = Array(CommandLine.arguments.dropFirst())
 let translate = args.contains("--translate")
-args.removeAll { $0 == "--translate" }
+let bilingual = args.contains("--bilingual")
+args.removeAll { $0 == "--translate" || $0 == "--bilingual" }
 
 let sourceName = args.count > 0 ? args[0] : "system"
 let seconds = args.count > 1 ? Double(args[1]) ?? 30 : 30
@@ -39,7 +40,8 @@ Task {
         let pipeline = TranscriptionPipeline(
             source: source,
             engine: engine,
-            task: translate ? .translate : .transcribe
+            task: translate ? .translate : .transcribe,
+            showOriginal: bilingual
         )
 
         // Track incoming audio so a silent run is diagnosable (no audio
@@ -105,12 +107,14 @@ Task {
             case .partial(let text, _):
                 partials += 1
                 FileHandle.standardOutput.write(Data("\r  ~ \(text)\u{1B}[K".utf8))
-            case .final(let text, let language):
+            case .final(let text, let original, let language):
                 finals += 1
                 FileHandle.standardOutput.write(Data("\r\u{1B}[K".utf8))
-                // When translating, show the detected source language.
+                // When translating, show the detected source language and,
+                // in bilingual mode, the original text above the English.
                 if translate, let name = SpokenLanguage.displayName(forCode: language) {
-                    print("  > [\(name)] \(text)")
+                    if let original { print("  > [\(name)] \(original)") }
+                    print("  > [\(name) → English] \(text)")
                 } else {
                     print("  > \(text)")
                 }

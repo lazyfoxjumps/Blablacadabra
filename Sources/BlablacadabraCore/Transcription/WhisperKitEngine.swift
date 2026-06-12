@@ -116,7 +116,7 @@ public actor WhisperKitEngine: TranscriptionEngine {
         }
     }
 
-    public func transcribe(_ samples: [Float], task: TranscriptionTask) async throws -> TranscriptionOutput {
+    public func transcribe(_ samples: [Float], task: TranscriptionTask, language: String?) async throws -> TranscriptionOutput {
         guard let whisper else { throw TranscriptionError.engineNotPrepared }
         // Whisper pads to its 30s window internally, but sub-0.1s blips only
         // produce hallucinations; the VAD already drops most of these.
@@ -124,6 +124,11 @@ public actor WhisperKitEngine: TranscriptionEngine {
 
         let options = DecodingOptions(
             task: task == .translate ? .translate : .transcribe,
+            // Forcing the source language matters: with language nil WhisperKit
+            // assumes English instead of detecting, so a Japanese utterance on
+            // the transcribe task comes back in English. The caller detects
+            // the language first and passes it here.
+            language: language,
             skipSpecialTokens: true,
             withoutTimestamps: true
         )
@@ -131,14 +136,25 @@ public actor WhisperKitEngine: TranscriptionEngine {
         let text = Self.cleaned(
             results.map(\.text).joined(separator: " ")
         )
-        // Whisper auto-detects the source language and reports it per result,
-        // including on the translate task (where it's the language being
-        // turned into English).
+        // result.language is the SOURCE language on the transcribe task, but
+        // the TARGET ("en") on the translate task (verified live: a Japanese
+        // clip translates with result.language == "en"). Callers that need
+        // the source language while translating use detectLanguage().
         let language = results.first?.language
         return TranscriptionOutput(
             text: Self.isNoise(text) ? "" : text,
             detectedLanguage: language
         )
+    }
+
+    /// Dedicated language detection (single forward pass, no full decode),
+    /// so the translate path can label the real source language.
+    public func detectLanguage(_ samples: [Float]) async throws -> String? {
+        guard let whisper else { throw TranscriptionError.engineNotPrepared }
+        guard samples.count >= Int(AudioPipelineFormat.sampleRate / 10) else { return nil }
+        // WhisperKit's method name carries an upstream typo ("Langauge").
+        let result = try await whisper.detectLangauge(audioArray: samples)
+        return result.language
     }
 
     /// Whisper opens chunks that start mid-conversation with a dialog dash

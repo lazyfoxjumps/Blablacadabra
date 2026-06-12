@@ -19,6 +19,13 @@ enum CaptureSourceChoice: String, CaseIterable, Identifiable {
     }
 }
 
+/// One committed caption line. `original` holds the source-language text
+/// shown above the translation in bilingual mode; nil otherwise.
+struct CaptionLine: Equatable {
+    let text: String
+    var original: String?
+}
+
 enum SessionPhase: Equatable {
     case idle
     case starting
@@ -41,7 +48,7 @@ final class AppState: ObservableObject {
     /// Download progress (0...1) while the speech model is being fetched,
     /// nil otherwise. Drives the percentage in the status line.
     @Published private(set) var downloadProgress: Double?
-    @Published private(set) var lines: [String] = []
+    @Published private(set) var lines: [CaptionLine] = []
     @Published private(set) var partial: String?
     @Published private(set) var lastEventAt: Date?
     /// ISO 639-1 code of the language being translated FROM, detected live by
@@ -88,6 +95,16 @@ final class AppState: ObservableObject {
             // Turning translate off clears the "from" language; turning it on
             // waits for the next decode to detect it.
             detectedLanguageCode = nil
+        }
+    }
+    /// Bilingual captions: show the original language above the English while
+    /// translating. Applies mid-stream; only does anything when translate is on.
+    @Published var showOriginal: Bool {
+        didSet {
+            defaults.set(showOriginal, forKey: "showOriginal")
+            if let pipeline {
+                Task { await pipeline.setShowOriginal(showOriginal) }
+            }
         }
     }
     @Published var model: String {
@@ -184,6 +201,7 @@ final class AppState: ObservableObject {
         let storedLocale = EnglishLocale(rawValue: defaults.string(forKey: "captionLocale") ?? "") ?? .us
         captionLocale = storedLocale
         normalizer = SpellingNormalizer(locale: storedLocale)
+        showOriginal = defaults.bool(forKey: "showOriginal")
         themeMode = ThemeMode(rawValue: defaults.string(forKey: "themeMode") ?? "") ?? .system
         fontChoice = FontChoice(rawValue: defaults.string(forKey: "fontChoice") ?? "") ?? .nunito
         fontSize = defaults.object(forKey: "fontSize") as? Double ?? 21
@@ -270,7 +288,8 @@ final class AppState: ObservableObject {
                 let pipeline = TranscriptionPipeline(
                     source: source,
                     engine: engine,
-                    task: self.translate ? .translate : .transcribe
+                    task: self.translate ? .translate : .transcribe,
+                    showOriginal: self.showOriginal
                 )
                 self.pipeline = pipeline
                 let stream = try await pipeline.start()
@@ -354,9 +373,11 @@ final class AppState: ObservableObject {
             // visibly flips form ("color" -> "colour") at the commit.
             partial = normalizer.normalize(text)
             noteDetectedLanguage(language)
-        case .final(let text, let language):
+        case .final(let text, let original, let language):
             partial = nil
-            lines.append(normalizer.normalize(text))
+            // Normalize the English headline; leave the original untouched
+            // (it's foreign-language text, not English to re-spell).
+            lines.append(CaptionLine(text: normalizer.normalize(text), original: original))
             noteDetectedLanguage(language)
             if lines.count > 8 { lines.removeFirst(lines.count - 8) }
             applyPendingThemeIfQuiet()

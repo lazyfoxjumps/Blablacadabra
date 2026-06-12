@@ -280,6 +280,15 @@ struct SettingsView: View {
     private func behavior(theme: ResolvedTheme) -> some View {
         section("Behavior", theme: theme) {
             VStack(alignment: .leading, spacing: 16) {
+                Toggle(isOn: $state.showOriginal) {
+                    behaviorLabel(
+                        "Show the original language too",
+                        detail: "While translating, the original words sit just above the English. Only does anything when translation is on.",
+                        theme: theme
+                    )
+                }
+                .toggleStyle(FlameToggleStyle())
+
                 Toggle(isOn: $state.calmMode) {
                     behaviorLabel(
                         "Calm mode",

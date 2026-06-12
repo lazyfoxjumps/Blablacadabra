@@ -34,9 +34,27 @@ public protocol TranscriptionEngine: AnyObject, Sendable {
     func prepare() async throws
 
     /// Transcribes one utterance of 16 kHz mono Float32 samples.
-    /// Returns the text (empty if nothing was said) plus the detected
-    /// source language when the engine can infer it.
-    func transcribe(_ samples: [Float], task: TranscriptionTask) async throws -> TranscriptionOutput
+    /// `language` forces the source language (ISO 639-1); pass nil to let the
+    /// engine decide. Forcing matters because some engines (WhisperKit) treat
+    /// an unspecified language as English rather than auto-detecting.
+    /// Returns the text (empty if nothing was said) plus the language the
+    /// engine reports for it.
+    func transcribe(_ samples: [Float], task: TranscriptionTask, language: String?) async throws -> TranscriptionOutput
+
+    /// Detects the spoken language (ISO 639-1) without producing text.
+    /// Used to label the translation direction, since the translate task
+    /// itself reports the target language ("en"), not the source.
+    /// Engines that can't do this return nil (the default).
+    func detectLanguage(_ samples: [Float]) async throws -> String?
+}
+
+public extension TranscriptionEngine {
+    func detectLanguage(_ samples: [Float]) async throws -> String? { nil }
+
+    /// Convenience: transcribe without forcing a language.
+    func transcribe(_ samples: [Float], task: TranscriptionTask) async throws -> TranscriptionOutput {
+        try await transcribe(samples, task: task, language: nil)
+    }
 }
 
 public enum TranscriptionError: LocalizedError {

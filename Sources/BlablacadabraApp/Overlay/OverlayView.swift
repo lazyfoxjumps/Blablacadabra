@@ -85,31 +85,49 @@ struct OverlayView: View {
 
     @ViewBuilder
     private func captions(textColor: RGB) -> some View {
-        let current = state.partial ?? state.lines.last
+        // The current line is the live partial (English only, no original yet)
+        // or, when nothing is being spoken, the last committed line.
+        let current: CaptionLine? = state.partial.map { CaptionLine(text: $0, original: nil) }
+            ?? state.lines.last
         if state.calmMode {
-            // Calm mode: one line, max contrast, no dimming, nothing else.
-            Text(current ?? quietLine)
-                .font(state.fontChoice.font(size: state.fontSize, weight: .medium))
-                .foregroundStyle(textColor.color)
-                .fixedSize(horizontal: false, vertical: true)
+            // Calm mode: one line, max contrast, no dimming. Original still
+            // sits above it when bilingual is on (it's the point of the mode
+            // for the user who needs both).
+            currentLine(current, textColor: textColor)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             let history = previousLines(current: current)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(history.enumerated()), id: \.offset) { index, line in
                     // Oldest is dimmest: brightness encodes age, no motion.
+                    // History shows the English line only (calm, uncluttered).
                     let age = history.count - index
-                    Text(line)
+                    Text(line.text)
                         .font(state.fontChoice.font(size: max(13, state.fontSize * 0.72)))
                         .foregroundStyle(textColor.color.opacity(dimming(forAge: age)))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(current ?? quietLine)
-                    .font(state.fontChoice.font(size: state.fontSize, weight: .medium))
-                    .foregroundStyle(textColor.color.opacity(current == nil ? 0.6 : 1))
-                    .fixedSize(horizontal: false, vertical: true)
+                currentLine(current, textColor: textColor)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The current line, with the original-language text above it (smaller,
+    /// dimmed) when bilingual mode supplied one.
+    @ViewBuilder
+    private func currentLine(_ line: CaptionLine?, textColor: RGB) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let original = line?.original, !original.isEmpty {
+                Text(original)
+                    .font(state.fontChoice.font(size: max(13, state.fontSize * 0.78)))
+                    .foregroundStyle(textColor.color.opacity(0.7))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(line?.text ?? quietLine)
+                .font(state.fontChoice.font(size: state.fontSize, weight: .medium))
+                .foregroundStyle(textColor.color.opacity(line == nil ? 0.6 : 1))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -122,7 +140,7 @@ struct OverlayView: View {
         }
     }
 
-    private func previousLines(current: String?) -> [String] {
+    private func previousLines(current: CaptionLine?) -> [CaptionLine] {
         var history = state.lines
         // The newest final doubles as the current line while nothing is
         // being spoken; don't show it twice.
