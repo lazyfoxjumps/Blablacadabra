@@ -7,6 +7,24 @@ public enum TranscriptionTask: String, Sendable, CaseIterable {
     case translate
 }
 
+/// One utterance's worth of recognized text plus what the engine inferred
+/// about it.
+public struct TranscriptionOutput: Sendable, Equatable {
+    /// The caption text (empty when nothing intelligible was said).
+    public let text: String
+    /// ISO 639-1 code of the detected source language (e.g. "id"), when the
+    /// engine knows it. Whisper reports this even on the translate task, so
+    /// the UI can show "Indonesian -> English". nil when unknown.
+    public let detectedLanguage: String?
+
+    public init(text: String, detectedLanguage: String? = nil) {
+        self.text = text
+        self.detectedLanguage = detectedLanguage
+    }
+
+    public static let empty = TranscriptionOutput(text: "")
+}
+
 /// A speech-to-text engine. WhisperKit is the on-device default; a cloud
 /// engine (Deepgram, Gemini Live, ...) can conform later and drop in behind
 /// the same pipeline.
@@ -16,8 +34,9 @@ public protocol TranscriptionEngine: AnyObject, Sendable {
     func prepare() async throws
 
     /// Transcribes one utterance of 16 kHz mono Float32 samples.
-    /// Returns plain text, or an empty string if nothing was said.
-    func transcribe(_ samples: [Float], task: TranscriptionTask) async throws -> String
+    /// Returns the text (empty if nothing was said) plus the detected
+    /// source language when the engine can infer it.
+    func transcribe(_ samples: [Float], task: TranscriptionTask) async throws -> TranscriptionOutput
 }
 
 public enum TranscriptionError: LocalizedError {

@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="0.5.0" # Phase 5: download progress, stall guard, system accessibility, call captioning verified
+VERSION="0.5.1" # English locale (8 variants + spelling normalizer) + detected-language status ("Indonesian → English (US)")
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra

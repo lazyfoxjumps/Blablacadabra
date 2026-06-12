@@ -116,11 +116,11 @@ public actor WhisperKitEngine: TranscriptionEngine {
         }
     }
 
-    public func transcribe(_ samples: [Float], task: TranscriptionTask) async throws -> String {
+    public func transcribe(_ samples: [Float], task: TranscriptionTask) async throws -> TranscriptionOutput {
         guard let whisper else { throw TranscriptionError.engineNotPrepared }
         // Whisper pads to its 30s window internally, but sub-0.1s blips only
         // produce hallucinations; the VAD already drops most of these.
-        guard samples.count >= Int(AudioPipelineFormat.sampleRate / 10) else { return "" }
+        guard samples.count >= Int(AudioPipelineFormat.sampleRate / 10) else { return .empty }
 
         let options = DecodingOptions(
             task: task == .translate ? .translate : .transcribe,
@@ -131,7 +131,14 @@ public actor WhisperKitEngine: TranscriptionEngine {
         let text = Self.cleaned(
             results.map(\.text).joined(separator: " ")
         )
-        return Self.isNoise(text) ? "" : text
+        // Whisper auto-detects the source language and reports it per result,
+        // including on the translate task (where it's the language being
+        // turned into English).
+        let language = results.first?.language
+        return TranscriptionOutput(
+            text: Self.isNoise(text) ? "" : text,
+            detectedLanguage: language
+        )
     }
 
     /// Whisper opens chunks that start mid-conversation with a dialog dash

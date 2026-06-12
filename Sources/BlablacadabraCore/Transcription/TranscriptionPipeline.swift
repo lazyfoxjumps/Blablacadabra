@@ -1,13 +1,15 @@
 import AVFoundation
 import Foundation
 
-/// What the caption UI consumes.
+/// What the caption UI consumes. The optional `language` is the ISO 639-1
+/// code of the detected source language (nil when unknown), used to show the
+/// translation direction in the status line.
 public enum CaptionEvent: Sendable, Equatable {
     /// Rolling hypothesis for the utterance in progress; replaces the
     /// previous partial on screen.
-    case partial(String)
+    case partial(String, language: String? = nil)
     /// The utterance is done; commit the line and start a fresh one.
-    case final(String)
+    case final(String, language: String? = nil)
 }
 
 /// Wires an `AudioSource` through VAD chunking into a `TranscriptionEngine`
@@ -139,9 +141,14 @@ public actor TranscriptionPipeline {
         Task {
             // Per-chunk failures are skipped, not fatal: one bad decode
             // shouldn't kill a live caption session.
-            let text = (try? await engine.transcribe(samples, task: task)) ?? ""
-            if !text.isEmpty {
-                continuation?.yield(isFinal ? .final(text) : .partial(text))
+            let output = (try? await engine.transcribe(samples, task: task)) ?? .empty
+            if !output.text.isEmpty {
+                let language = output.detectedLanguage
+                continuation?.yield(
+                    isFinal
+                        ? .final(output.text, language: language)
+                        : .partial(output.text, language: language)
+                )
             }
             transcribing = false
             pumpTranscriber()

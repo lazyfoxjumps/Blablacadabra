@@ -44,6 +44,9 @@ final class AppState: ObservableObject {
     @Published private(set) var lines: [String] = []
     @Published private(set) var partial: String?
     @Published private(set) var lastEventAt: Date?
+    /// ISO 639-1 code of the language being translated FROM, detected live by
+    /// the engine. Only surfaced while translating; reset each session.
+    @Published private(set) var detectedLanguageCode: String?
 
     private var pipeline: TranscriptionPipeline?
     private var sessionTask: Task<Void, Never>?
@@ -82,6 +85,9 @@ final class AppState: ObservableObject {
             if let pipeline {
                 Task { await pipeline.setTask(task) }
             }
+            // Turning translate off clears the "from" language; turning it on
+            // waits for the next decode to detect it.
+            detectedLanguageCode = nil
         }
     }
     @Published var model: String {
@@ -90,6 +96,17 @@ final class AppState: ObservableObject {
             restartIfRunning()
         }
     }
+    /// Display English variant. Whisper has no regional switch, so this is a
+    /// spelling pass on caption text today; the stored locale id is ready for
+    /// locale-aware engines later. Already-committed lines are left alone
+    /// (never reflow text someone may still be reading).
+    @Published var captionLocale: EnglishLocale {
+        didSet {
+            defaults.set(captionLocale.rawValue, forKey: "captionLocale")
+            normalizer = SpellingNormalizer(locale: captionLocale)
+        }
+    }
+    private var normalizer: SpellingNormalizer
     @Published var themeMode: ThemeMode {
         didSet {
             defaults.set(themeMode.rawValue, forKey: "themeMode")
@@ -164,6 +181,9 @@ final class AppState: ObservableObject {
         sourceChoice = CaptureSourceChoice(rawValue: defaults.string(forKey: "sourceChoice") ?? "") ?? .system
         translate = defaults.bool(forKey: "translate")
         model = defaults.string(forKey: "model") ?? WhisperKitEngine.defaultModel
+        let storedLocale = EnglishLocale(rawValue: defaults.string(forKey: "captionLocale") ?? "") ?? .us
+        captionLocale = storedLocale
+        normalizer = SpellingNormalizer(locale: storedLocale)
         themeMode = ThemeMode(rawValue: defaults.string(forKey: "themeMode") ?? "") ?? .system
         fontChoice = FontChoice(rawValue: defaults.string(forKey: "fontChoice") ?? "") ?? .nunito
         fontSize = defaults.object(forKey: "fontSize") as? Double ?? 21
@@ -224,6 +244,7 @@ final class AppState: ObservableObject {
         downloadProgress = nil
         phase = .starting
         partial = nil
+        detectedLanguageCode = nil
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
@@ -328,14 +349,26 @@ final class AppState: ObservableObject {
     private func handle(_ event: CaptionEvent) {
         lastEventAt = Date()
         switch event {
-        case .partial(let text):
-            partial = text
-        case .final(let text):
+        case .partial(let text, let language):
+            // Partials get the same spelling pass as finals so a word never
+            // visibly flips form ("color" -> "colour") at the commit.
+            partial = normalizer.normalize(text)
+            noteDetectedLanguage(language)
+        case .final(let text, let language):
             partial = nil
-            lines.append(text)
+            lines.append(normalizer.normalize(text))
+            noteDetectedLanguage(language)
             if lines.count > 8 { lines.removeFirst(lines.count - 8) }
             applyPendingThemeIfQuiet()
         }
+    }
+
+    /// Remembers the detected source language while translating, so the status
+    /// can read "Indonesian -> English (US)". Only updates when it actually
+    /// changes (a quiet decode reporting the same language shouldn't churn).
+    private func noteDetectedLanguage(_ code: String?) {
+        guard translate, let code, code != detectedLanguageCode else { return }
+        detectedLanguageCode = code
     }
 
     private static func friendlyMessage(for error: Error) -> String {
@@ -360,9 +393,14 @@ final class AppState: ObservableObject {
             }
             return "Warming up · getting the model ready"
         case .listening:
-            return translate
-                ? "Translating to English · \(sourceChoice.label)"
-                : "Listening · \(sourceChoice.label)"
+            guard translate else { return "Listening · \(sourceChoice.label)" }
+            // Once the engine has heard enough to name the source language,
+            // show the direction ("Indonesian → English (US)"); until then,
+            // the honest generic ("Translating to English (US)").
+            if let from = SpokenLanguage.displayName(forCode: detectedLanguageCode) {
+                return "\(from) → \(captionLocale.label) · \(sourceChoice.label)"
+            }
+            return "Translating to \(captionLocale.label) · \(sourceChoice.label)"
         case .paused:
             return "Paused · last lines kept"
         case .permissionNeeded:

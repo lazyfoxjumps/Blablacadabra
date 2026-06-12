@@ -352,6 +352,26 @@ struct SettingsView: View {
                         .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
                 }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("English")
+                        .font(AppFont.detail)
+                        .foregroundStyle(theme.secondaryText)
+                    // Eight variants in two even rows: a single row truncates.
+                    PillPicker(
+                        selection: $state.captionLocale,
+                        options: localeRow([.us, .uk, .au, .sg]),
+                        theme: theme
+                    )
+                    PillPicker(
+                        selection: $state.captionLocale,
+                        options: localeRow([.ca, .india, .nz, .ie]),
+                        theme: theme
+                    )
+                    Text("Changes the spelling in captions, like colour vs color. Speech is understood the same in every accent either way.")
+                        .font(AppFont.footnote)
+                        .foregroundStyle(theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 6) {
                     Image(systemName: "lock")
                     Text("Everything stays on this Mac. Audio never leaves it.")
@@ -360,6 +380,10 @@ struct SettingsView: View {
                 .foregroundStyle(theme.primaryText)
             }
         }
+    }
+
+    private func localeRow(_ locales: [EnglishLocale]) -> [(value: EnglishLocale, label: String)] {
+        locales.map { ($0, $0.shortLabel) }
     }
 
     // MARK: Section scaffolding

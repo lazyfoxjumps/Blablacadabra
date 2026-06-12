@@ -102,13 +102,18 @@ Task {
         var partials = 0
         for await event in captions {
             switch event {
-            case .partial(let text):
+            case .partial(let text, _):
                 partials += 1
                 FileHandle.standardOutput.write(Data("\r  ~ \(text)\u{1B}[K".utf8))
-            case .final(let text):
+            case .final(let text, let language):
                 finals += 1
                 FileHandle.standardOutput.write(Data("\r\u{1B}[K".utf8))
-                print("  > \(text)")
+                // When translating, show the detected source language.
+                if translate, let name = SpokenLanguage.displayName(forCode: language) {
+                    print("  > [\(name)] \(text)")
+                } else {
+                    print("  > \(text)")
+                }
             }
         }
         stopper.cancel()
