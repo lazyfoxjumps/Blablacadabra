@@ -92,15 +92,18 @@ final class AppState: ObservableObject {
 
     /// Live pipelines. One in single-source modes; two in "Both" (system + mic),
     /// each detecting and translating independently. Settings changes fan out to
-    /// all of them. Each is either a WhisperKit-backed `TranscriptionPipeline` or
-    /// (macOS 26+, transcribe-only, supported locale) an `AppleSpeechPipeline`;
-    /// both conform to `CaptionPipeline` so AppState treats them identically.
+    /// all of them. Each is a WhisperKit-backed `TranscriptionPipeline`, an Apple
+    /// `SpeechAnalyzer` `AppleSpeechPipeline` (transcribe-only), or an
+    /// `AppleTranslatingPipeline` (Apple transcription + Apple translation); all
+    /// conform to `CaptionPipeline` so AppState treats them identically.
     private var pipelines: [any CaptionPipeline] = []
-    /// Whether the live session is running on the Apple `SpeechAnalyzer` engine.
-    /// Apple fixes its locale at transcriber init, so a spoken-language change
-    /// must restart (vs Whisper's live, no-restart `setSpokenLanguage`). Decided
-    /// once per session in `launchSession`.
-    private var activeEngineIsApple = false
+    /// Which engine the live session runs on, decided once per session in
+    /// `launchSession`.
+    private var activeSessionEngine: CaptionEngineKind = .whisper
+    /// Whether the live session is running on either Apple engine. Apple fixes its
+    /// locale at init, so a spoken-language change must restart (vs Whisper's live,
+    /// no-restart `setSpokenLanguage`).
+    private var activeEngineIsApple: Bool { activeSessionEngine != .whisper }
     private var sessionTask: Task<Void, Never>?
     /// One stream-consume task per live lane; cancelled on teardown.
     private var sessionTasks: [Task<Void, Never>] = []
@@ -196,8 +199,11 @@ final class AppState: ObservableObject {
             // Apple fixes its locale at transcriber init (the live fan-out above
             // is a no-op there), and a new lock may even flip Apple<->Whisper
             // support, so restart to re-resolve the locale and re-pick the engine.
-            // Whisper keeps its live, no-restart behavior.
-            if activeEngineIsApple { restartIfRunning() }
+            // Also restart when translating: a fresh lock can promote a Whisper
+            // translate session to the Apple translate fast-path (it needs a known
+            // source language). Plain Whisper transcribe keeps its live, no-restart
+            // behavior.
+            if activeEngineIsApple || translate { restartIfRunning() }
         }
     }
     /// Bilingual captions: show the original language above the English while
@@ -402,29 +408,44 @@ final class AppState: ObservableObject {
         launchSession()
     }
 
-    /// Resolves whether this session should use the Apple engine, running the
-    /// async availability + authorization probes once. Short-circuits before the
-    /// permission prompt when translate is on or the locale isn't Apple-supported,
-    /// so we never nag for a session that would fall back to WhisperKit anyway.
-    /// `forceWhisper` skips Apple entirely (used when an Apple start already failed
-    /// this session and we're retrying on the fallback).
-    private func resolveUseApple(forceWhisper: Bool) async -> Bool {
-        guard !forceWhisper, !translate else { return false }
-        if #available(macOS 26, *) {
-            let locale = AppleSpeechLocale.resolved(
-                spokenLanguage: spokenLanguageCode,
-                englishLocale: captionLocale
-            )
-            guard await AppleSpeechPipeline.isSupported(locale) else { return false }
-            let authorized = await AppleSpeechPipeline.requestAuthorization()
-            return CaptionEngineKind.select(
-                translate: false,
-                localeSupported: true,
-                authorized: authorized,
-                osHasApple: true
-            ) == .apple
+    /// Resolves which engine this session runs on, running the async availability
+    /// / install / authorization probes once. Short-circuits before the Speech
+    /// permission prompt whenever Apple couldn't be used anyway (unsupported
+    /// locale, or translate without a locked + installed pair), so we never nag
+    /// for a session that would fall back to WhisperKit. `forceWhisper` skips
+    /// Apple entirely (used when an Apple start already failed this session and
+    /// we're retrying on the fallback).
+    private func resolveEngine(forceWhisper: Bool) async -> CaptionEngineKind {
+        guard !forceWhisper else { return .whisper }
+        guard #available(macOS 26, *) else { return .whisper }
+
+        let locale = AppleSpeechLocale.resolved(
+            spokenLanguage: spokenLanguageCode,
+            englishLocale: captionLocale
+        )
+        guard await AppleSpeechPipeline.isSupported(locale) else { return .whisper }
+
+        let languageLocked = (spokenLanguageCode?.isEmpty == false)
+        var translationInstalled = false
+        if translate {
+            // Apple translate needs a KNOWN source language (it can't auto-detect
+            // from audio) and an already-installed source->English pack. Either
+            // missing -> WhisperKit, which auto-detects and translates ~99
+            // languages. Checked BEFORE the auth prompt so we don't nag.
+            guard languageLocked, let iso = AppleSpeechLocale.isoCode(for: locale) else { return .whisper }
+            translationInstalled = await AppleTranslationService.isInstalled(sourceISOCode: iso)
+            guard translationInstalled else { return .whisper }
         }
-        return false
+
+        let authorized = await AppleSpeechPipeline.requestAuthorization()
+        return CaptionEngineKind.select(
+            translate: translate,
+            localeSupported: true,
+            authorized: authorized,
+            osHasApple: true,
+            languageLocked: languageLocked,
+            translationInstalled: translationInstalled
+        )
     }
 
     /// Starts a session unconditionally (the public `startCaptions` guards
@@ -458,11 +479,12 @@ final class AppState: ObservableObject {
             guard self.sessionGeneration == generation else { return }
 
             // Decide the engine once for the whole session (both lanes match).
-            let useApple = await self.resolveUseApple(forceWhisper: forceWhisper)
+            let engineKind = await self.resolveEngine(forceWhisper: forceWhisper)
             guard self.sessionGeneration == generation else { return }
-            self.activeEngineIsApple = useApple
+            self.activeSessionEngine = engineKind
+            let useApple = (engineKind != .whisper)
             if useApple {
-                // Apple's model is OS-resident: English is instant (zero
+                // Apple's models are OS-resident: English is instant (zero
                 // download); only an on-demand locale reports install progress
                 // via the per-lane installProgress closure below.
                 self.startingNeedsDownload = false
@@ -495,12 +517,25 @@ final class AppState: ObservableObject {
                                 }
                             }
                         }
-                        pipeline = AppleSpeechPipeline(
-                            source: config.source,
-                            locale: locale,
-                            inputGain: Float(self.inputGain),
-                            installProgress: installProgress
-                        )
+                        if engineKind == .appleTranslate {
+                            // Apple transcription (source locale) + Apple
+                            // Translation to English. Bilingual is near-free here.
+                            pipeline = AppleTranslatingPipeline(
+                                source: config.source,
+                                locale: locale,
+                                showOriginal: self.showOriginal,
+                                inputGain: Float(self.inputGain),
+                                installProgress: installProgress
+                            )
+                        } else {
+                            // Transcribe-only (translate off): Apple SpeechAnalyzer.
+                            pipeline = AppleSpeechPipeline(
+                                source: config.source,
+                                locale: locale,
+                                inputGain: Float(self.inputGain),
+                                installProgress: installProgress
+                            )
+                        }
                     } else {
                         let engine = self.engine(for: config.origin)
                         if laneIndex == 0 {
@@ -580,7 +615,7 @@ final class AppState: ObservableObject {
                 for task in self.sessionTasks { task.cancel() }
                 self.sessionTasks = []
                 self.pipelines = []
-                self.activeEngineIsApple = false
+                self.activeSessionEngine = .whisper
                 if forceWhisper {
                     self.phase = .trouble(Self.friendlyMessage(for: appleError))
                 } else {
@@ -793,10 +828,12 @@ final class AppState: ObservableObject {
             return "Warming up · getting the model ready"
         case .listening:
             guard translate else { return "Listening · \(sourceChoice.label)" }
-            // Once the engine has heard enough to name the source language,
-            // show the direction ("Indonesian → English (US)"); until then,
-            // the honest generic ("Translating to English (US)").
-            if let from = SpokenLanguage.displayName(forCode: detectedLanguageCode) {
+            // Show the direction ("Indonesian → English (US)") as soon as we know
+            // the source: a locked language is known immediately (and is required
+            // for the Apple translate path), otherwise once auto-detect names it.
+            // Until then, the honest generic ("Translating to English (US)").
+            let fromCode = detectedLanguageCode ?? spokenLanguageCode
+            if let from = SpokenLanguage.displayName(forCode: fromCode) {
                 return "\(from) → \(captionLocale.label) · \(sourceChoice.label)"
             }
             return "Translating to \(captionLocale.label) · \(sourceChoice.label)"

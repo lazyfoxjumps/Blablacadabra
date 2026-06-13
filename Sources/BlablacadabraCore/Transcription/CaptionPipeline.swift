@@ -11,26 +11,42 @@ import Foundation
 /// is transcribe-only in Round 1, and its locale is fixed at init, so it
 /// handles language and task changes via an `AppState` restart instead); the
 /// protocol keeps the call sites uniform regardless.
-/// Which engine a caption session runs on. Apple's `SpeechAnalyzer` is the
+/// Which engine a caption session runs on. Apple's on-device frameworks are the
 /// preferred fast-path; WhisperKit is the universal fallback.
+///
+/// - `appleTranscribe`: `SpeechAnalyzer` streaming transcription, translate off.
+/// - `appleTranslate` (Round 2): `SpeechAnalyzer` transcription + Apple's
+///   `Translation` framework translating each line to English. Bilingual is then
+///   near-free (the original is already the transcriber's output, no second pass).
+/// - `whisper`: WhisperKit, the universal fallback (~99 languages, audio
+///   auto-detect, older macOS).
 public enum CaptionEngineKind: Equatable, Sendable {
-    case apple
+    case appleTranscribe
+    case appleTranslate
     case whisper
 
-    /// Pure engine choice (no OS calls, so it's unit-testable). Apple is used only
-    /// when every condition holds: not translating (Round 1 keeps translate on
-    /// WhisperKit), the OS has the Apple API, the locale is Apple-supported, and
-    /// Speech Recognition is authorized. Any miss falls back to WhisperKit.
+    /// Pure engine choice (no OS calls, so it's unit-testable). The shared gate
+    /// for any Apple path: the OS has the API, the locale is Apple-supported for
+    /// transcription, and Speech Recognition is authorized. Then:
+    /// - translate OFF -> `appleTranscribe`.
+    /// - translate ON -> `appleTranslate` ONLY when the source language is locked
+    ///   (Apple can't auto-detect from audio like Whisper, and it's also the
+    ///   translation source) AND the source->English pack is already installed (we
+    ///   never trigger a download here, to honor the no-nag rule). Otherwise
+    ///   WhisperKit, which auto-detects and translates ~99 languages.
+    /// Any miss falls back to WhisperKit.
     public static func select(
         translate: Bool,
         localeSupported: Bool,
         authorized: Bool,
-        osHasApple: Bool
+        osHasApple: Bool,
+        languageLocked: Bool = false,
+        translationInstalled: Bool = false
     ) -> CaptionEngineKind {
-        if translate || !osHasApple || !localeSupported || !authorized {
-            return .whisper
-        }
-        return .apple
+        guard osHasApple, authorized, localeSupported else { return .whisper }
+        guard translate else { return .appleTranscribe }
+        guard languageLocked, translationInstalled else { return .whisper }
+        return .appleTranslate
     }
 }
 

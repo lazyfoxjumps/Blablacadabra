@@ -14,6 +14,10 @@ public enum AppleSpeechUnavailable: LocalizedError, Equatable {
     case assetInstallFailed
     /// The analyzer offered no audio format we could convert to.
     case noCompatibleFormat
+    /// Apple's `Translation` couldn't translate this language pair (Round 2): the
+    /// pack isn't usable on this Mac. The session falls back to WhisperKit, which
+    /// translates it instead.
+    case translationUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +29,8 @@ public enum AppleSpeechUnavailable: LocalizedError, Equatable {
             return "Apple's speech model for this language couldn't be set up. Falling back to the built-in model."
         case .noCompatibleFormat:
             return "Apple's captions couldn't match the audio format. Falling back to the built-in model."
+        case .translationUnavailable:
+            return "Apple can't translate this language on this Mac yet. Falling back to the built-in model."
         }
     }
 }
