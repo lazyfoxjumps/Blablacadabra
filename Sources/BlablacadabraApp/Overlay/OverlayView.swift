@@ -1,14 +1,14 @@
 import BlablacadabraCore
 import SwiftUI
 
-/// The caption card: header row (status words + icon left, drag handle and
-/// pause right), then rolling captions. Current line large; up to four
+/// The caption card: header row (status words + icon left, pause right; the
+/// whole card drags), then rolling captions. Current line large; up to four
 /// previous lines dimmed by recency (brightness encodes age, nothing moves).
+/// Width is user-resizable by dragging the card's edges (min 600, persisted);
+/// height always fits the content.
 struct OverlayView: View {
     @ObservedObject var state: AppState
     @State private var fadedOut = false
-
-    private static let cardWidth: Double = 600
 
     var body: some View {
         let colors = state.captionColors
@@ -27,7 +27,7 @@ struct OverlayView: View {
             }
         }
         .padding(16)
-        .frame(width: Self.cardWidth, alignment: .leading)
+        .frame(width: max(AppState.overlayMinWidth, state.overlayWidth), alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(colors.background.color.opacity(state.effectiveOverlayOpacity))
@@ -55,10 +55,6 @@ struct OverlayView: View {
                 .lineLimit(1)
             languageChip(textColor: textColor)
             Spacer(minLength: 12)
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 12, weight: .semibold))
-                .help("Drag anywhere on the card to move it")
-                .accessibilityHidden(true)
             if state.phase == .paused {
                 Button {
                     state.resumeCaptions()
@@ -112,8 +108,9 @@ struct OverlayView: View {
     private func captions(textColor: RGB) -> some View {
         // The current line is the live partial (English only, no original yet)
         // or, when nothing is being spoken, the last committed line.
-        let current: CaptionLine? = state.partial.map { CaptionLine(text: $0, original: nil) }
-            ?? state.lines.last
+        let current: CaptionLine? = state.partial.map {
+            CaptionLine(text: $0, original: nil, origin: state.partialOrigin)
+        } ?? state.lines.last
         if state.calmMode {
             // Calm mode: one line, max contrast, no dimming. Original still
             // sits above it when bilingual is on (it's the point of the mode
@@ -127,10 +124,13 @@ struct OverlayView: View {
                     // Oldest is dimmest: brightness encodes age, no motion.
                     // History shows the English line only (calm, uncluttered).
                     let age = history.count - index
-                    Text(line.text)
-                        .font(state.fontChoice.font(size: max(13, state.fontSize * 0.72)))
-                        .foregroundStyle(textColor.color.opacity(dimming(forAge: age)))
-                        .fixedSize(horizontal: false, vertical: true)
+                    let opacity = dimming(forAge: age)
+                    originLine(line.origin, textColor: textColor, opacity: opacity) {
+                        Text(line.text)
+                            .font(state.fontChoice.font(size: max(13, state.fontSize * 0.72)))
+                            .foregroundStyle(textColor.color.opacity(opacity))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 currentLine(current, textColor: textColor)
             }
@@ -138,21 +138,48 @@ struct OverlayView: View {
         }
     }
 
-    /// The current line, with the original-language text above it (smaller,
-    /// dimmed) when bilingual mode supplied one.
+    /// The current line, with the original-language text above it when
+    /// bilingual mode supplied one. The original (the language being translated
+    /// FROM) is drawn in the caption text color, only lightly dimmed, so it
+    /// stays clearly readable instead of fading into the background.
     @ViewBuilder
     private func currentLine(_ line: CaptionLine?, textColor: RGB) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let body = VStack(alignment: .leading, spacing: 3) {
             if let original = line?.original, !original.isEmpty {
                 Text(original)
                     .font(state.fontChoice.font(size: max(13, state.fontSize * 0.78)))
-                    .foregroundStyle(textColor.color.opacity(0.7))
+                    .foregroundStyle(textColor.color.opacity(0.88))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(line?.text ?? quietLine)
                 .font(state.fontChoice.font(size: state.fontSize, weight: .medium))
                 .foregroundStyle(textColor.color.opacity(line == nil ? 0.6 : 1))
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        originLine(line?.origin ?? .single, textColor: textColor, opacity: 1) {
+            body
+        }
+    }
+
+    /// Prefixes a caption line with a small source marker (speaker / mic icon)
+    /// when running in "Both" mode, so it's clear which side each line came
+    /// from. Single-source sessions show nothing (`.single` has no symbol).
+    /// Words + icon, never color alone: the icon carries a VoiceOver label.
+    @ViewBuilder
+    private func originLine(
+        _ origin: CaptionOrigin, textColor: RGB, opacity: Double,
+        @ViewBuilder _ content: () -> some View
+    ) -> some View {
+        if let symbol = origin.symbol {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Image(systemName: symbol)
+                    .font(.system(size: max(10, state.fontSize * 0.5), weight: .semibold))
+                    .foregroundStyle(textColor.color.opacity(opacity * 0.7))
+                    .accessibilityLabel(origin.spokenLabel)
+                content()
+            }
+        } else {
+            content()
         }
     }
 

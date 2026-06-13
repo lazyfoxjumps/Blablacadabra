@@ -6,8 +6,12 @@ import SwiftUI
 /// joins every Space (FaceTime fullscreen included), draggable by its
 /// background, optional click-through. Visible whenever a session exists
 /// (listening, paused, or stuck on a fixable state); hidden when idle.
+///
+/// The card is user-resizable in width by dragging its edge; height always
+/// hugs the SwiftUI content (`.preferredContentSize`). The width can't go below
+/// `AppState.overlayMinWidth` (the original fixed size) and is persisted.
 @MainActor
-final class OverlayPanelController {
+final class OverlayPanelController: NSObject, NSWindowDelegate {
     private let panel: NSPanel
     private let state: AppState
     private var subscriptions: Set<AnyCancellable> = []
@@ -19,7 +23,9 @@ final class OverlayPanelController {
         host.sizingOptions = [.preferredContentSize]
 
         panel = NSPanel(contentViewController: host)
-        panel.styleMask = [.borderless, .nonactivatingPanel]
+        // `.resizable` lets the user drag the edge to widen; `windowWillResize`
+        // pins height to the content and clamps the minimum width.
+        panel.styleMask = [.borderless, .nonactivatingPanel, .resizable]
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -28,7 +34,11 @@ final class OverlayPanelController {
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
+        panel.minSize = NSSize(width: AppState.overlayMinWidth, height: 1)
         panel.setFrameAutosaveName("blablacadabra.overlay")
+
+        super.init()
+        panel.delegate = self
 
         if panel.frame.origin == .zero, let screen = NSScreen.main {
             // First launch: bottom-center, clear of the Dock.
@@ -46,6 +56,20 @@ final class OverlayPanelController {
             }
             .store(in: &subscriptions)
         sync()
+    }
+
+    /// Width is the only axis the user controls; height follows the content. As
+    /// the edge is dragged we clamp to the minimum and write the chosen width
+    /// back to state so the SwiftUI frame (and `.preferredContentSize`) agree
+    /// instead of snapping back.
+    nonisolated func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        // AppKit calls this on the main thread, so it's safe to touch the
+        // main-actor state and the window's frame here.
+        MainActor.assumeIsolated {
+            let width = max(AppState.overlayMinWidth, frameSize.width)
+            if state.overlayWidth != width { state.overlayWidth = width }
+            return NSSize(width: width, height: sender.frame.height)
+        }
     }
 
     func resetPosition() {

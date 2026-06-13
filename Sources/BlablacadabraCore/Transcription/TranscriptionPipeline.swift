@@ -39,11 +39,11 @@ public actor TranscriptionPipeline {
     /// the live latency the user feels stays low).
     public private(set) var showOriginal: Bool
 
-    /// Cached source language. In auto mode the engine detects ONCE (on the
-    /// first final of the session) and reuses the result for every later chunk:
-    /// per-chunk detection flip-flops on short or ambiguous audio, and re-running
-    /// it every utterance is wasted latency. Reset when the task or the locked
-    /// language changes, so the next decode re-detects fresh.
+    /// Cached source language, used in translate mode only. The engine detects
+    /// ONCE (on the first final of the session) and reuses the result for every
+    /// later chunk: per-chunk detection flip-flops on short or ambiguous audio,
+    /// and re-running it every utterance is wasted latency. Reset when the task
+    /// or the locked language changes, so the next decode re-detects fresh.
     private var lastLanguage: String?
 
     /// Optional tap on incoming audio (converted pipeline-format samples);
@@ -212,9 +212,9 @@ public actor TranscriptionPipeline {
         let language = await resolvedLanguage(for: samples, isFinal: isFinal)
 
         guard task == .translate else {
-            // Plain transcription: decode in the resolved language, so a
-            // non-English speaker isn't forced into English text and an English
-            // speaker isn't misdetected into Japanese mid-sentence.
+            // Plain transcription: a locked language is honored; otherwise
+            // English is assumed (auto-detection is translate-only, see
+            // resolvedLanguage).
             let out = (try? await engine.transcribe(samples, task: .transcribe, language: language)) ?? .empty
             guard !out.text.isEmpty else { return nil }
             let reported = language ?? out.detectedLanguage
@@ -245,12 +245,18 @@ public actor TranscriptionPipeline {
     }
 
     /// The language to decode this chunk as. A locked `spokenLanguage` wins and
-    /// never spends a detection pass. In auto mode the first final detects and
+    /// never spends a detection pass. Auto-detection only runs while
+    /// TRANSLATING: in plain transcription, auto means English (nil), because
+    /// detection on ambiguous audio ("dah dah dah", humming) misfires and a
+    /// cached wrong guess then forces every later English utterance into that
+    /// language. Anyone captioning non-English without translating locks the
+    /// language explicitly. In translate-auto mode the first final detects and
     /// caches; every later chunk reuses that. Partials never detect (a tiny
     /// rolling partial is the least reliable moment to language-ID, and the
     /// next final settles it anyway).
     private func resolvedLanguage(for samples: [Float], isFinal: Bool) async -> String? {
         if let spokenLanguage { return spokenLanguage }
+        guard task == .translate else { return nil }
         if let lastLanguage { return lastLanguage }
         guard isFinal else { return nil }
         let detected = (try? await engine.detectLanguage(samples)) ?? nil

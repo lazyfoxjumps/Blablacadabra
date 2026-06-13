@@ -7,6 +7,11 @@ import SwiftUI
 struct MenuBarPanelView: View {
     @ObservedObject var state: AppState
     let openSettings: () -> Void
+    /// Live model-slider position; commits to `state.model` only on release, so
+    /// dragging across stops never kicks off several downloads (same rule as
+    /// Settings).
+    @State private var modelIndex: Double = 0
+    @State private var modelSliderEditing = false
 
     var body: some View {
         let theme = state.theme
@@ -69,10 +74,13 @@ struct MenuBarPanelView: View {
 
             Divider().overlay(theme.secondaryText.opacity(0.3))
 
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
+            // Generous spacing so the three everyday controls don't read as a
+            // cramped stack (ND rule: space over squeeze).
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("What I listen to")
-                        .font(AppFont.footnote)
+                        // Same size as "Translate to English" below.
+                        .font(AppFont.body)
                         .foregroundStyle(theme.secondaryText)
                     PillPicker(
                         selection: $state.sourceChoice,
@@ -96,20 +104,7 @@ struct MenuBarPanelView: View {
                 }
                 .toggleStyle(FlameToggleStyle())
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Speech model")
-                        .font(AppFont.footnote)
-                        .foregroundStyle(theme.secondaryText)
-                    PillPicker(
-                        selection: $state.model,
-                        options: WhisperKitEngine.availableModels.map { ($0, WhisperKitEngine.displayName(for: $0)) },
-                        theme: theme,
-                        fontFor: { _ in AppFont.nunito(11, .semibold) }
-                    )
-                    Text("Bigger is more accurate, smaller is faster.")
-                        .font(AppFont.footnote)
-                        .foregroundStyle(theme.secondaryText)
-                }
+                modelSlider(theme: theme)
             }
 
             Divider().overlay(theme.secondaryText.opacity(0.3))
@@ -130,6 +125,52 @@ struct MenuBarPanelView: View {
         .frame(width: 300)
         .background(theme.surface)
         .preferredColorScheme(theme.colorScheme)
+        .onAppear { modelIndex = Double(WhisperKitEngine.index(of: state.model)) }
+        .onChange(of: state.model) { _, newModel in
+            // Keep the slider in step if the model changes elsewhere (Settings),
+            // unless the user is mid-drag here.
+            if !modelSliderEditing { modelIndex = Double(WhisperKitEngine.index(of: newModel)) }
+        }
+    }
+
+    /// Discrete 4-stop model slider (tiny/small/medium/turbo), matching the one
+    /// in Settings. Commits to `state.model` only on release (and on VoiceOver
+    /// adjust) so dragging across stops never starts several downloads.
+    private func modelSlider(theme: ResolvedTheme) -> some View {
+        let count = WhisperKitEngine.availableModels.count
+        let currentModel = WhisperKitEngine.model(atIndex: Int(modelIndex))
+        let commit = {
+            let chosen = WhisperKitEngine.model(atIndex: Int(modelIndex))
+            if chosen != state.model { state.model = chosen }
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Speech model")
+                    // Same size as "Translate to English".
+                    .font(AppFont.body)
+                    .foregroundStyle(theme.secondaryText)
+                Spacer()
+                Text(WhisperKitEngine.displayName(for: currentModel))
+                    .font(AppFont.control)
+                    .foregroundStyle(theme.accentText)
+            }
+            NDSlider(
+                value: $modelIndex,
+                range: 0...Double(max(1, count - 1)),
+                step: 1,
+                theme: theme,
+                onEditingChanged: { editing in
+                    modelSliderEditing = editing
+                    if !editing { commit() }
+                }
+            )
+            .onChange(of: modelIndex) { _, _ in
+                if !modelSliderEditing { commit() }
+            }
+            Text("Bigger is more accurate, smaller is faster.")
+                .font(AppFont.footnote)
+                .foregroundStyle(theme.secondaryText)
+        }
     }
 
     private var startStopLabel: String {

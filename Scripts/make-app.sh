@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="0.6.1" # Audio settings section (mic device picker, capture-health warning, auto-follow notice, live input level meter, input boost) + model slider (tiny/small/medium/turbo, base->small migration)
+VERSION="0.6.2" # Both-mode lane separation (system + mic as independent pipelines, origin-marked lines), translate-off no longer auto-detects (fixes English->Indonesian), resizable overlay (min = original width), panel model slider + spacing/font fixes, slimmer sliders, removed redundant overlay drag handle
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra

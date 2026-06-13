@@ -12,6 +12,8 @@ private actor FakeEngine: TranscriptionEngine {
     private(set) var translateCalls = 0
     private(set) var transcribeCalls = 0
     private(set) var detectCalls = 0
+    /// The language hint passed to each transcribe-task call, in order.
+    private(set) var transcribeLanguageHints: [String?] = []
 
     init(english: String, original: String, language: String) {
         self.englishText = english
@@ -29,6 +31,7 @@ private actor FakeEngine: TranscriptionEngine {
             return TranscriptionOutput(text: englishText, detectedLanguage: "en")
         case .transcribe:
             transcribeCalls += 1
+            transcribeLanguageHints.append(language)
             return TranscriptionOutput(text: originalText, detectedLanguage: language ?? sourceLanguage)
         }
     }
@@ -149,22 +152,27 @@ private func collect(_ pipeline: TranscriptionPipeline) async throws -> [Caption
         #expect(counts.transcribe == 0) // no original line requested
     }
 
-    @Test func plainTranscriptionDetectsThenTranscribes() async throws {
-        let engine = FakeEngine(english: "ignored", original: "Hallo, ich heisse Anna.", language: "de")
+    @Test func plainTranscriptionAssumesEnglishWithoutDetection() async throws {
+        let engine = FakeEngine(english: "ignored", original: "Hello there.", language: "de")
         let pipeline = TranscriptionPipeline(
             source: ScriptedSource(), engine: engine, task: .transcribe, showOriginal: true
         )
-        let finals = try await collect(pipeline).compactMap { event -> (String, String?)? in
-            if case let .final(text, _, language) = event { return (text, language) }
+        let finals = try await collect(pipeline).compactMap { event -> String? in
+            if case let .final(text, _, _) = event { return text }
             return nil
         }
         #expect(finals.count == 1)
-        #expect(finals[0].0 == "Hallo, ich heisse Anna.")
-        #expect(finals[0].1 == "de")
+        #expect(finals[0] == "Hello there.")
         let counts = await engine.counts
         #expect(counts.translate == 0) // never translates in transcribe mode
-        #expect(counts.detect == 1)
+        // Auto-detection is translate-only: with translate off, auto means
+        // English, so an ambiguous chunk can never lock captions into a wrong
+        // language (the "English in, Indonesian out" bug). Non-English
+        // transcription is the explicit language lock's job.
+        #expect(counts.detect == 0)
         #expect(counts.transcribe == 1)
+        let hints = await engine.transcribeLanguageHints
+        #expect(hints == [nil]) // no language forced = English assumed
     }
 
     @Test func lockedLanguageSkipsDetectionEntirely() async throws {

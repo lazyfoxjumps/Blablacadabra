@@ -20,11 +20,42 @@ enum CaptureSourceChoice: String, CaseIterable, Identifiable {
     }
 }
 
+/// Where a caption line came from. In "Both" mode the system-audio lane and the
+/// mic lane run as separate pipelines (each detects and translates on its own,
+/// so the video's language never bleeds into the room's), and lines carry which
+/// lane produced them so the overlay can mark it. `.single` = any single-source
+/// session, where there's nothing to disambiguate, so no marker is shown.
+enum CaptionOrigin: Equatable {
+    case single
+    case system
+    case mic
+
+    /// SF Symbol shown before the line in Both mode (none for single).
+    var symbol: String? {
+        switch self {
+        case .single: return nil
+        case .system: return "speaker.wave.2.fill"
+        case .mic: return "mic.fill"
+        }
+    }
+
+    /// Spoken-word label for VoiceOver and tooltips (never color alone).
+    var spokenLabel: String {
+        switch self {
+        case .single: return ""
+        case .system: return "From system audio"
+        case .mic: return "From the microphone"
+        }
+    }
+}
+
 /// One committed caption line. `original` holds the source-language text
-/// shown above the translation in bilingual mode; nil otherwise.
+/// shown above the translation in bilingual mode; nil otherwise. `origin`
+/// marks which "Both"-mode lane produced it.
 struct CaptionLine: Equatable {
     let text: String
     var original: String?
+    var origin: CaptionOrigin = .single
 }
 
 enum SessionPhase: Equatable {
@@ -51,13 +82,21 @@ final class AppState: ObservableObject {
     @Published private(set) var downloadProgress: Double?
     @Published private(set) var lines: [CaptionLine] = []
     @Published private(set) var partial: String?
+    /// Which lane the live partial belongs to (Both mode), so a final from one
+    /// lane doesn't wipe the other lane's in-progress partial.
+    @Published private(set) var partialOrigin: CaptionOrigin = .single
     @Published private(set) var lastEventAt: Date?
     /// ISO 639-1 code of the language being translated FROM, detected live by
     /// the engine. Only surfaced while translating; reset each session.
     @Published private(set) var detectedLanguageCode: String?
 
-    private var pipeline: TranscriptionPipeline?
+    /// Live pipelines. One in single-source modes; two in "Both" (system + mic),
+    /// each detecting and translating independently. Settings changes fan out to
+    /// all of them.
+    private var pipelines: [TranscriptionPipeline] = []
     private var sessionTask: Task<Void, Never>?
+    /// One stream-consume task per live lane; cancelled on teardown.
+    private var sessionTasks: [Task<Void, Never>] = []
     private var sessionGeneration = 0
     /// The in-flight teardown of the previous session. A new session awaits it
     /// before creating its capture, so AVAudioEngine/SCStream never overlap
@@ -66,12 +105,13 @@ final class AppState: ObservableObject {
     /// Debounce for rapid setting changes (flipping model/source pills fast):
     /// coalesce into one restart instead of spawning overlapping sessions.
     private var restartTask: Task<Void, Never>?
-    /// The prepared engine is kept alive across restarts so a source change or
-    /// a pause/resume reuses the already-loaded model (near-instant) instead of
-    /// reloading it every time (slow, and re-exposes the WhisperKit load stall).
-    /// Replaced only when the model itself changes.
-    private var preparedEngine: WhisperKitEngine?
-    private var preparedModel: String?
+    /// Prepared engines kept alive across restarts (per lane origin) so a source
+    /// change or a pause/resume reuses the already-loaded model (near-instant)
+    /// instead of reloading it (slow, and re-exposes the WhisperKit load stall).
+    /// In "Both" mode each lane gets its OWN engine: separate WhisperKit
+    /// instances run concurrently safely, whereas one shared instance can't
+    /// transcribe two lanes at once. Entries are replaced when the model changes.
+    private var preparedEngines: [CaptionOrigin: (model: String, engine: WhisperKitEngine)] = [:]
 
     // MARK: Audio devices (for the Audio settings section)
 
@@ -124,9 +164,7 @@ final class AppState: ObservableObject {
         didSet {
             defaults.set(translate, forKey: "translate")
             let task: TranscriptionTask = translate ? .translate : .transcribe
-            if let pipeline {
-                Task { await pipeline.setTask(task) }
-            }
+            eachPipeline { await $0.setTask(task) }
             // Turning translate off clears the "from" language; turning it on
             // waits for the next decode to detect it.
             detectedLanguageCode = nil
@@ -140,9 +178,7 @@ final class AppState: ObservableObject {
     @Published var spokenLanguageCode: String? {
         didSet {
             defaults.set(spokenLanguageCode, forKey: "spokenLanguage")
-            if let pipeline {
-                Task { await pipeline.setSpokenLanguage(spokenLanguageCode) }
-            }
+            eachPipeline { [code = spokenLanguageCode] in await $0.setSpokenLanguage(code) }
             // The chip should reflect the locked choice immediately, not the
             // stale auto-detected one.
             if spokenLanguageCode != nil { detectedLanguageCode = nil }
@@ -153,9 +189,7 @@ final class AppState: ObservableObject {
     @Published var showOriginal: Bool {
         didSet {
             defaults.set(showOriginal, forKey: "showOriginal")
-            if let pipeline {
-                Task { await pipeline.setShowOriginal(showOriginal) }
-            }
+            eachPipeline { [show = showOriginal] in await $0.setShowOriginal(show) }
         }
     }
     @Published var model: String {
@@ -178,9 +212,7 @@ final class AppState: ObservableObject {
     @Published var inputGain: Double {
         didSet {
             defaults.set(inputGain, forKey: "inputGain")
-            if let pipeline {
-                Task { await pipeline.setInputGain(Float(inputGain)) }
-            }
+            eachPipeline { [gain = Float(inputGain)] in await $0.setInputGain(gain) }
         }
     }
     /// Display English variant. Whisper has no regional switch, so this is a
@@ -212,6 +244,14 @@ final class AppState: ObservableObject {
     @Published var overlayOpacity: Double {
         didSet { defaults.set(overlayOpacity, forKey: "overlayOpacity") }
     }
+    /// User-set width of the caption card. The card is resizable by dragging its
+    /// edge; height always hugs the content. Never goes below `overlayMinWidth`
+    /// (the original fixed size, the smallest it's allowed to get).
+    @Published var overlayWidth: Double {
+        didSet { defaults.set(overlayWidth, forKey: "overlayWidth") }
+    }
+    /// The smallest the caption card may be sized to (its original fixed width).
+    static let overlayMinWidth: Double = 600
     @Published var calmMode: Bool {
         didSet { defaults.set(calmMode, forKey: "calmMode") }
     }
@@ -283,6 +323,7 @@ final class AppState: ObservableObject {
         fontSize = defaults.object(forKey: "fontSize") as? Double ?? 21
         previousLines = defaults.object(forKey: "previousLines") as? Int ?? 2
         overlayOpacity = defaults.object(forKey: "overlayOpacity") as? Double ?? 0.9
+        overlayWidth = max(AppState.overlayMinWidth, defaults.object(forKey: "overlayWidth") as? Double ?? AppState.overlayMinWidth)
         calmMode = defaults.bool(forKey: "calmMode")
         hideOnSilence = defaults.bool(forKey: "hideOnSilence")
         clickThrough = defaults.bool(forKey: "clickThrough")
@@ -347,8 +388,13 @@ final class AppState: ObservableObject {
 
     /// Starts a session unconditionally (the public `startCaptions` guards
     /// against double-start; restart and resume come straight here). Reuses the
-    /// prepared engine when the model is unchanged, and waits for any in-flight
-    /// teardown so the old capture is fully gone before the new one opens.
+    /// prepared engine(s) when the model is unchanged, and waits for any
+    /// in-flight teardown so the old capture is fully gone before the new opens.
+    ///
+    /// "Both" runs two lanes (system + mic) as separate pipelines so each
+    /// detects/translates on its own; the lanes start sequentially so a
+    /// first-run model download happens once (the second lane then loads it from
+    /// cache) and two model loads never collide.
     private func launchSession() {
         sessionGeneration += 1
         let generation = sessionGeneration
@@ -356,80 +402,133 @@ final class AppState: ObservableObject {
         downloadProgress = nil
         phase = .starting
         partial = nil
+        partialOrigin = .single
         detectedLanguageCode = nil
 
-        // Build a fresh engine only when the model changed; otherwise keep the
-        // loaded one (instant restart, no reload stall).
-        if preparedModel != model || preparedEngine == nil {
-            preparedEngine = WhisperKitEngine(model: model)
-            preparedModel = model
-        }
-        let engine = preparedEngine!
+        let configs = laneConfigs()
         let pendingTeardown = teardownTask
+        pipelines = []
+        sessionTasks = []
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
             // Never overlap captures: let the previous session's stop() finish.
             await pendingTeardown?.value
             guard self.sessionGeneration == generation else { return }
+
+            var started: [TranscriptionPipeline] = []
             do {
-                let source = self.makeSource()
-                // Honest waiting: percentage while downloading, and the
-                // status flips to "warming up" the moment the download ends
-                // and the CoreML compile starts. A reused, already-loaded
-                // engine no-ops prepare() and never fires this.
-                await engine.setPrepareHandler { [weak self] event in
-                    Task { @MainActor in
-                        guard let self, self.sessionGeneration == generation else { return }
-                        switch event {
-                        case .downloading(let fraction):
-                            self.startingNeedsDownload = true
-                            self.downloadProgress = fraction
-                        case .loading:
-                            self.startingNeedsDownload = false
-                            self.downloadProgress = nil
+                for (laneIndex, config) in configs.enumerated() {
+                    let engine = self.engine(for: config.origin)
+                    if laneIndex == 0 {
+                        // Honest waiting: percentage while downloading, then
+                        // "warming up" when the CoreML compile starts. Only the
+                        // first lane reports (it's the one that downloads); a
+                        // reused, already-loaded engine no-ops prepare().
+                        await engine.setPrepareHandler { [weak self] event in
+                            Task { @MainActor in
+                                guard let self, self.sessionGeneration == generation else { return }
+                                switch event {
+                                case .downloading(let fraction):
+                                    self.startingNeedsDownload = true
+                                    self.downloadProgress = fraction
+                                case .loading:
+                                    self.startingNeedsDownload = false
+                                    self.downloadProgress = nil
+                                }
+                            }
                         }
                     }
-                }
-                let pipeline = TranscriptionPipeline(
-                    source: source,
-                    engine: engine,
-                    task: self.translate ? .translate : .transcribe,
-                    spokenLanguage: self.spokenLanguageCode,
-                    showOriginal: self.showOriginal,
-                    inputGain: Float(self.inputGain)
-                )
-                self.pipeline = pipeline
-                // Drive the live input level meter off the (gain-applied) audio
-                // tap. The monitor is its own object so this doesn't churn the
-                // overlay/panel.
-                let monitor = self.levelMonitor
-                await pipeline.setAudioTap { samples in
-                    guard !samples.isEmpty else { return }
-                    var sum: Float = 0
-                    for sample in samples { sum += sample * sample }
-                    let rms = (sum / Float(samples.count)).squareRoot()
-                    Task { @MainActor in monitor.report(rms: rms) }
-                }
-                let stream = try await pipeline.start()
-                guard self.sessionGeneration == generation else { return }
-                self.phase = .listening
-                for await event in stream {
-                    guard self.sessionGeneration == generation else { return }
-                    self.handle(event)
-                }
-                // Stream drained on its own (source ended) without stop().
-                if self.sessionGeneration == generation, self.phase == .listening {
-                    self.phase = .trouble("I lost the audio. Press start and I'll pick right back up.")
+                    let pipeline = TranscriptionPipeline(
+                        source: config.source,
+                        engine: engine,
+                        task: self.translate ? .translate : .transcribe,
+                        spokenLanguage: self.spokenLanguageCode,
+                        showOriginal: self.showOriginal,
+                        inputGain: Float(self.inputGain)
+                    )
+                    // Drive the live input level meter off the (gain-applied)
+                    // audio tap. The monitor is its own object so this doesn't
+                    // churn the overlay/panel. Both lanes feed it; the meter's
+                    // peak-decay naturally shows whichever is louder.
+                    let monitor = self.levelMonitor
+                    await pipeline.setAudioTap { samples in
+                        guard !samples.isEmpty else { return }
+                        var sum: Float = 0
+                        for sample in samples { sum += sample * sample }
+                        let rms = (sum / Float(samples.count)).squareRoot()
+                        Task { @MainActor in monitor.report(rms: rms) }
+                    }
+                    // Sequential start: lane 0 fully prepares (download + load)
+                    // before lane 1, so a first-run download happens once.
+                    let stream = try await pipeline.start()
+                    guard self.sessionGeneration == generation else {
+                        await pipeline.stop()
+                        for p in started { await p.stop() }
+                        return
+                    }
+                    started.append(pipeline)
+                    self.pipelines = started
+                    if self.phase != .listening { self.phase = .listening }
+
+                    let origin = config.origin
+                    let soleLane = configs.count == 1
+                    let consume = Task { [weak self] in
+                        for await event in stream {
+                            guard let self, self.sessionGeneration == generation else { break }
+                            self.handle(event, origin: origin)
+                        }
+                        // A lane ending on its own (source died) is only a
+                        // session-level "lost the audio" when it's the only lane.
+                        if let self, self.sessionGeneration == generation,
+                           self.phase == .listening, soleLane {
+                            self.phase = .trouble("I lost the audio. Press start and I'll pick right back up.")
+                        }
+                    }
+                    self.sessionTasks.append(consume)
                 }
             } catch AudioCaptureError.screenRecordingPermissionDenied {
                 guard self.sessionGeneration == generation else { return }
+                for p in started { await p.stop() }
                 self.phase = .permissionNeeded
             } catch {
                 guard self.sessionGeneration == generation else { return }
+                for p in started { await p.stop() }
                 self.phase = .trouble(Self.friendlyMessage(for: error))
             }
         }
+    }
+
+    /// The lanes for the current source: one for single sources (origin
+    /// `.single`, no marker), two for "Both" (system + mic, each marked).
+    private func laneConfigs() -> [(origin: CaptionOrigin, source: AudioSource)] {
+        switch sourceChoice {
+        case .system: return [(.single, SystemAudioCapture())]
+        case .mic: return [(.single, MicCapture(preferredDeviceUID: micDeviceUID))]
+        case .both: return [
+            (.system, SystemAudioCapture()),
+            (.mic, MicCapture(preferredDeviceUID: micDeviceUID)),
+        ]
+        }
+    }
+
+    /// A prepared engine for a lane, reused while the model is unchanged. Each
+    /// lane origin keeps its own (Both mode needs two live instances).
+    private func engine(for origin: CaptionOrigin) -> WhisperKitEngine {
+        if let cached = preparedEngines[origin], cached.model == model {
+            return cached.engine
+        }
+        let engine = WhisperKitEngine(model: model)
+        preparedEngines[origin] = (model, engine)
+        return engine
+    }
+
+    /// Apply a change to every live pipeline (one lane, or both lanes in Both
+    /// mode). No-op when nothing is running.
+    private func eachPipeline(_ body: @escaping (TranscriptionPipeline) async -> Void) {
+        let ps = pipelines
+        guard !ps.isEmpty else { return }
+        Task { for pipeline in ps { await body(pipeline) } }
     }
 
     /// Stop and clear: captions are off, overlay goes away.
@@ -460,14 +559,17 @@ final class AppState: ObservableObject {
 
     private func endSession(newPhase: SessionPhase) {
         sessionGeneration += 1
-        let pipeline = pipeline
-        self.pipeline = nil
+        let ending = pipelines
+        pipelines = []
+        for task in sessionTasks { task.cancel() }
+        sessionTasks = []
         sessionTask = nil
         downloadProgress = nil
         phase = newPhase
+        partialOrigin = .single
         levelMonitor.reset()
         // Track the teardown so the next session can await it (no overlap).
-        teardownTask = Task { if let pipeline { await pipeline.stop() } }
+        teardownTask = Task { for pipeline in ending { await pipeline.stop() } }
     }
 
     /// A model or source change while running restarts the session. Debounced
@@ -484,14 +586,6 @@ final class AppState: ObservableObject {
             guard let self, !Task.isCancelled, self.isRunning else { return }
             self.endSession(newPhase: .starting)
             self.launchSession()
-        }
-    }
-
-    private func makeSource() -> AudioSource {
-        switch sourceChoice {
-        case .system: return SystemAudioCapture()
-        case .mic: return MicCapture(preferredDeviceUID: micDeviceUID)
-        case .both: return MixedAudioSource(SystemAudioCapture(), MicCapture(preferredDeviceUID: micDeviceUID))
         }
     }
 
@@ -526,19 +620,22 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func handle(_ event: CaptionEvent) {
+    private func handle(_ event: CaptionEvent, origin: CaptionOrigin) {
         lastEventAt = Date()
         switch event {
         case .partial(let text, let language):
             // Partials get the same spelling pass as finals so a word never
             // visibly flips form ("color" -> "colour") at the commit.
             partial = normalizer.normalize(text)
+            partialOrigin = origin
             noteDetectedLanguage(language)
         case .final(let text, let original, let language):
-            partial = nil
+            // Only clear the partial if it was this lane's; the other Both-mode
+            // lane may still have a live partial we shouldn't wipe.
+            if partialOrigin == origin { partial = nil }
             // Normalize the English headline; leave the original untouched
             // (it's foreign-language text, not English to re-spell).
-            lines.append(CaptionLine(text: normalizer.normalize(text), original: original))
+            lines.append(CaptionLine(text: normalizer.normalize(text), original: original, origin: origin))
             noteDetectedLanguage(language)
             if lines.count > 8 { lines.removeFirst(lines.count - 8) }
             applyPendingThemeIfQuiet()

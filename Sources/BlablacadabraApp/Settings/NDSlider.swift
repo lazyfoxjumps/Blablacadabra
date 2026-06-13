@@ -15,8 +15,12 @@ struct NDSlider: View {
 
     @State private var editing = false
 
-    private let trackHeight: Double = 8
-    private let knobSize: Double = 22
+    // Slim, minimalistic look: a thin track and a small knob so the slider
+    // doesn't visually overpower the label beside it. The hit area stays a
+    // comfortable height for dragging even though the drawn parts are smaller.
+    private let trackHeight: Double = 5
+    private let knobSize: Double = 16
+    private let hitHeight: Double = 24
 
     var body: some View {
         GeometryReader { geo in
@@ -33,11 +37,12 @@ struct NDSlider: View {
                     .frame(width: max(trackHeight, knobX + knobSize / 2), height: trackHeight)
                 Circle()
                     .fill(theme.sliderFill)
-                    .overlay(Circle().strokeBorder(theme.deepSurface, lineWidth: 2))
+                    .overlay(Circle().strokeBorder(theme.deepSurface, lineWidth: 1.5))
                     .frame(width: knobSize, height: knobSize)
                     .offset(x: knobX)
                     .shadow(radius: 1, y: 0.5)
             }
+            .frame(height: hitHeight)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -56,7 +61,7 @@ struct NDSlider: View {
                     }
             )
         }
-        .frame(height: knobSize)
+        .frame(height: hitHeight)
         .accessibilityElement()
         .accessibilityValue(Text("\(Int(value))"))
         .accessibilityAdjustableAction { direction in
