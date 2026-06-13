@@ -11,6 +11,29 @@ import Foundation
 /// is transcribe-only in Round 1, and its locale is fixed at init, so it
 /// handles language and task changes via an `AppState` restart instead); the
 /// protocol keeps the call sites uniform regardless.
+/// Which engine a caption session runs on. Apple's `SpeechAnalyzer` is the
+/// preferred fast-path; WhisperKit is the universal fallback.
+public enum CaptionEngineKind: Equatable, Sendable {
+    case apple
+    case whisper
+
+    /// Pure engine choice (no OS calls, so it's unit-testable). Apple is used only
+    /// when every condition holds: not translating (Round 1 keeps translate on
+    /// WhisperKit), the OS has the Apple API, the locale is Apple-supported, and
+    /// Speech Recognition is authorized. Any miss falls back to WhisperKit.
+    public static func select(
+        translate: Bool,
+        localeSupported: Bool,
+        authorized: Bool,
+        osHasApple: Bool
+    ) -> CaptionEngineKind {
+        if translate || !osHasApple || !localeSupported || !authorized {
+            return .whisper
+        }
+        return .apple
+    }
+}
+
 public protocol CaptionPipeline: Actor, Sendable {
     /// Starts capture, prepares the engine, and returns the caption stream.
     /// The stream finishes after `stop()` once any queued output has drained.

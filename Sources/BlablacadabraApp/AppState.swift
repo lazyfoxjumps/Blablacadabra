@@ -92,8 +92,15 @@ final class AppState: ObservableObject {
 
     /// Live pipelines. One in single-source modes; two in "Both" (system + mic),
     /// each detecting and translating independently. Settings changes fan out to
-    /// all of them.
-    private var pipelines: [TranscriptionPipeline] = []
+    /// all of them. Each is either a WhisperKit-backed `TranscriptionPipeline` or
+    /// (macOS 26+, transcribe-only, supported locale) an `AppleSpeechPipeline`;
+    /// both conform to `CaptionPipeline` so AppState treats them identically.
+    private var pipelines: [any CaptionPipeline] = []
+    /// Whether the live session is running on the Apple `SpeechAnalyzer` engine.
+    /// Apple fixes its locale at transcriber init, so a spoken-language change
+    /// must restart (vs Whisper's live, no-restart `setSpokenLanguage`). Decided
+    /// once per session in `launchSession`.
+    private var activeEngineIsApple = false
     private var sessionTask: Task<Void, Never>?
     /// One stream-consume task per live lane; cancelled on teardown.
     private var sessionTasks: [Task<Void, Never>] = []
@@ -168,6 +175,10 @@ final class AppState: ObservableObject {
             // Turning translate off clears the "from" language; turning it on
             // waits for the next decode to detect it.
             detectedLanguageCode = nil
+            // Translate decides the engine (ON forces WhisperKit; OFF lets the
+            // Apple fast-path back in), so a flip while running must re-evaluate
+            // and rebuild. The live setTask above covers the brief debounce gap.
+            restartIfRunning()
         }
     }
     /// Locked spoken language (ISO 639-1), or nil for auto-detect. When set,
@@ -182,6 +193,11 @@ final class AppState: ObservableObject {
             // The chip should reflect the locked choice immediately, not the
             // stale auto-detected one.
             if spokenLanguageCode != nil { detectedLanguageCode = nil }
+            // Apple fixes its locale at transcriber init (the live fan-out above
+            // is a no-op there), and a new lock may even flip Apple<->Whisper
+            // support, so restart to re-resolve the locale and re-pick the engine.
+            // Whisper keeps its live, no-restart behavior.
+            if activeEngineIsApple { restartIfRunning() }
         }
     }
     /// Bilingual captions: show the original language above the English while
@@ -386,6 +402,31 @@ final class AppState: ObservableObject {
         launchSession()
     }
 
+    /// Resolves whether this session should use the Apple engine, running the
+    /// async availability + authorization probes once. Short-circuits before the
+    /// permission prompt when translate is on or the locale isn't Apple-supported,
+    /// so we never nag for a session that would fall back to WhisperKit anyway.
+    /// `forceWhisper` skips Apple entirely (used when an Apple start already failed
+    /// this session and we're retrying on the fallback).
+    private func resolveUseApple(forceWhisper: Bool) async -> Bool {
+        guard !forceWhisper, !translate else { return false }
+        if #available(macOS 26, *) {
+            let locale = AppleSpeechLocale.resolved(
+                spokenLanguage: spokenLanguageCode,
+                englishLocale: captionLocale
+            )
+            guard await AppleSpeechPipeline.isSupported(locale) else { return false }
+            let authorized = await AppleSpeechPipeline.requestAuthorization()
+            return CaptionEngineKind.select(
+                translate: false,
+                localeSupported: true,
+                authorized: authorized,
+                osHasApple: true
+            ) == .apple
+        }
+        return false
+    }
+
     /// Starts a session unconditionally (the public `startCaptions` guards
     /// against double-start; restart and resume come straight here). Reuses the
     /// prepared engine(s) when the model is unchanged, and waits for any
@@ -395,7 +436,7 @@ final class AppState: ObservableObject {
     /// detects/translates on its own; the lanes start sequentially so a
     /// first-run model download happens once (the second lane then loads it from
     /// cache) and two model loads never collide.
-    private func launchSession() {
+    private func launchSession(forceWhisper: Bool = false) {
         sessionGeneration += 1
         let generation = sessionGeneration
         startingNeedsDownload = !WhisperKitEngine.isModelCached(model)
@@ -416,37 +457,80 @@ final class AppState: ObservableObject {
             await pendingTeardown?.value
             guard self.sessionGeneration == generation else { return }
 
-            var started: [TranscriptionPipeline] = []
+            // Decide the engine once for the whole session (both lanes match).
+            let useApple = await self.resolveUseApple(forceWhisper: forceWhisper)
+            guard self.sessionGeneration == generation else { return }
+            self.activeEngineIsApple = useApple
+            if useApple {
+                // Apple's model is OS-resident: English is instant (zero
+                // download); only an on-demand locale reports install progress
+                // via the per-lane installProgress closure below.
+                self.startingNeedsDownload = false
+                self.downloadProgress = nil
+            }
+
+            var started: [any CaptionPipeline] = []
             do {
                 for (laneIndex, config) in configs.enumerated() {
-                    let engine = self.engine(for: config.origin)
-                    if laneIndex == 0 {
-                        // Honest waiting: percentage while downloading, then
-                        // "warming up" when the CoreML compile starts. Only the
-                        // first lane reports (it's the one that downloads); a
-                        // reused, already-loaded engine no-ops prepare().
-                        await engine.setPrepareHandler { [weak self] event in
-                            Task { @MainActor in
-                                guard let self, self.sessionGeneration == generation else { return }
-                                switch event {
-                                case .downloading(let fraction):
-                                    self.startingNeedsDownload = true
-                                    self.downloadProgress = fraction
-                                case .loading:
-                                    self.startingNeedsDownload = false
-                                    self.downloadProgress = nil
+                    let pipeline: any CaptionPipeline
+                    if useApple, #available(macOS 26, *) {
+                        let locale = AppleSpeechLocale.resolved(
+                            spokenLanguage: self.spokenLanguageCode,
+                            englishLocale: self.captionLocale
+                        )
+                        // Only lane 0 reports asset-install progress (the one that
+                        // would download; lane 1 reuses the now-present asset).
+                        var installProgress: (@Sendable (Double) -> Void)?
+                        if laneIndex == 0 {
+                            installProgress = { [weak self] fraction in
+                                Task { @MainActor in
+                                    guard let self, self.sessionGeneration == generation else { return }
+                                    if fraction >= 1 {
+                                        self.startingNeedsDownload = false
+                                        self.downloadProgress = nil
+                                    } else {
+                                        self.startingNeedsDownload = true
+                                        self.downloadProgress = fraction
+                                    }
                                 }
                             }
                         }
+                        pipeline = AppleSpeechPipeline(
+                            source: config.source,
+                            locale: locale,
+                            inputGain: Float(self.inputGain),
+                            installProgress: installProgress
+                        )
+                    } else {
+                        let engine = self.engine(for: config.origin)
+                        if laneIndex == 0 {
+                            // Honest waiting: percentage while downloading, then
+                            // "warming up" when the CoreML compile starts. Only the
+                            // first lane reports (it's the one that downloads); a
+                            // reused, already-loaded engine no-ops prepare().
+                            await engine.setPrepareHandler { [weak self] event in
+                                Task { @MainActor in
+                                    guard let self, self.sessionGeneration == generation else { return }
+                                    switch event {
+                                    case .downloading(let fraction):
+                                        self.startingNeedsDownload = true
+                                        self.downloadProgress = fraction
+                                    case .loading:
+                                        self.startingNeedsDownload = false
+                                        self.downloadProgress = nil
+                                    }
+                                }
+                            }
+                        }
+                        pipeline = TranscriptionPipeline(
+                            source: config.source,
+                            engine: engine,
+                            task: self.translate ? .translate : .transcribe,
+                            spokenLanguage: self.spokenLanguageCode,
+                            showOriginal: self.showOriginal,
+                            inputGain: Float(self.inputGain)
+                        )
                     }
-                    let pipeline = TranscriptionPipeline(
-                        source: config.source,
-                        engine: engine,
-                        task: self.translate ? .translate : .transcribe,
-                        spokenLanguage: self.spokenLanguageCode,
-                        showOriginal: self.showOriginal,
-                        inputGain: Float(self.inputGain)
-                    )
                     // Drive the live input level meter off the (gain-applied)
                     // audio tap. The monitor is its own object so this doesn't
                     // churn the overlay/panel. Both lanes feed it; the meter's
@@ -487,6 +571,21 @@ final class AppState: ObservableObject {
                     }
                     self.sessionTasks.append(consume)
                 }
+            } catch let appleError as AppleSpeechUnavailable {
+                // Apple couldn't actually start (asset install / format). Tear down
+                // and retry the whole session on WhisperKit, silently, so the user
+                // keeps captions. If even the fallback is what failed, surface it.
+                guard self.sessionGeneration == generation else { return }
+                for p in started { await p.stop() }
+                for task in self.sessionTasks { task.cancel() }
+                self.sessionTasks = []
+                self.pipelines = []
+                self.activeEngineIsApple = false
+                if forceWhisper {
+                    self.phase = .trouble(Self.friendlyMessage(for: appleError))
+                } else {
+                    self.launchSession(forceWhisper: true)
+                }
             } catch AudioCaptureError.screenRecordingPermissionDenied {
                 guard self.sessionGeneration == generation else { return }
                 for p in started { await p.stop() }
@@ -525,7 +624,7 @@ final class AppState: ObservableObject {
 
     /// Apply a change to every live pipeline (one lane, or both lanes in Both
     /// mode). No-op when nothing is running.
-    private func eachPipeline(_ body: @escaping (TranscriptionPipeline) async -> Void) {
+    private func eachPipeline(_ body: @escaping (any CaptionPipeline) async -> Void) {
         let ps = pipelines
         guard !ps.isEmpty else { return }
         Task { for pipeline in ps { await body(pipeline) } }

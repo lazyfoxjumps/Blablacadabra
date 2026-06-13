@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="0.6.2" # Both-mode lane separation (system + mic as independent pipelines, origin-marked lines), translate-off no longer auto-detects (fixes English->Indonesian), resizable overlay (min = original width), panel model slider + spacing/font fixes, slimmer sliders, removed redundant overlay drag handle
+VERSION="0.7.0" # Apple SpeechAnalyzer fast-path (Round 1): auto-picks Apple's on-device streaming engine for transcribe on supported locales (English instant, zero download), silently falls back to WhisperKit for translate/unsupported/unauthorized; one-time Speech Recognition prompt on first Apple use
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra
@@ -54,6 +54,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>Now you hear it, now you read it.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>With the mic I can also caption people in the room with you. Optional, your call.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Blablacadabra uses on-device speech recognition to turn what you hear into captions. Audio never leaves your Mac.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Used once to compute exact sunrise and sunset times for the Sun theme. Never stored anywhere but this Mac.</string>
 </dict>
