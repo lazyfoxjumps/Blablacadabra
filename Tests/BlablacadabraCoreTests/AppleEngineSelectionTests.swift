@@ -64,6 +64,34 @@ import Testing
         )
     }
 
+    @Test func translateFallsBackForDenylistedSourceLanguage() {
+        // id is on the denylist (Apple leans Malay) -> Whisper translates it,
+        // even with a locked + installed pair. Transcribe-only is unaffected.
+        #expect(
+            CaptionEngineKind.select(
+                translate: true,
+                localeSupported: true,
+                authorized: true,
+                osHasApple: true,
+                languageLocked: true,
+                translationInstalled: true,
+                sourceISOCode: "id"
+            ) == .whisper
+        )
+        // A non-denylisted source still gets the Apple translate fast-path.
+        #expect(
+            CaptionEngineKind.select(
+                translate: true,
+                localeSupported: true,
+                authorized: true,
+                osHasApple: true,
+                languageLocked: true,
+                translationInstalled: true,
+                sourceISOCode: "ja"
+            ) == .appleTranslate
+        )
+    }
+
     @Test func unsupportedLocaleForcesWhisper() {
         #expect(
             CaptionEngineKind.select(
@@ -115,32 +143,38 @@ import Testing
     @Test func exhaustiveTruthTable() {
         // Apple shared gate: osHasApple && authorized && localeSupported.
         // Then translate off -> appleTranscribe; translate on -> appleTranslate
-        // iff (languageLocked && translationInstalled), else whisper.
+        // iff (languageLocked && translationInstalled && source not denylisted),
+        // else whisper. "ja" stands in for any non-denylisted source, "id" for a
+        // denylisted one, nil for "unknown / don't care".
         for translate in [false, true] {
             for localeSupported in [false, true] {
                 for authorized in [false, true] {
                     for osHasApple in [false, true] {
                         for languageLocked in [false, true] {
                             for translationInstalled in [false, true] {
-                                let appleGate = osHasApple && authorized && localeSupported
-                                let expected: CaptionEngineKind
-                                if !appleGate {
-                                    expected = .whisper
-                                } else if !translate {
-                                    expected = .appleTranscribe
-                                } else {
-                                    expected = (languageLocked && translationInstalled) ? .appleTranslate : .whisper
+                                for sourceISOCode in [nil, "ja", "id"] as [String?] {
+                                    let appleGate = osHasApple && authorized && localeSupported
+                                    let denylisted = sourceISOCode.map(CaptionEngineKind.appleTranslateDenylist.contains) ?? false
+                                    let expected: CaptionEngineKind
+                                    if !appleGate {
+                                        expected = .whisper
+                                    } else if !translate {
+                                        expected = .appleTranscribe
+                                    } else {
+                                        expected = (languageLocked && translationInstalled && !denylisted) ? .appleTranslate : .whisper
+                                    }
+                                    #expect(
+                                        CaptionEngineKind.select(
+                                            translate: translate,
+                                            localeSupported: localeSupported,
+                                            authorized: authorized,
+                                            osHasApple: osHasApple,
+                                            languageLocked: languageLocked,
+                                            translationInstalled: translationInstalled,
+                                            sourceISOCode: sourceISOCode
+                                        ) == expected
+                                    )
                                 }
-                                #expect(
-                                    CaptionEngineKind.select(
-                                        translate: translate,
-                                        localeSupported: localeSupported,
-                                        authorized: authorized,
-                                        osHasApple: osHasApple,
-                                        languageLocked: languageLocked,
-                                        translationInstalled: translationInstalled
-                                    ) == expected
-                                )
                             }
                         }
                     }

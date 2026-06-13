@@ -427,12 +427,17 @@ final class AppState: ObservableObject {
 
         let languageLocked = (spokenLanguageCode?.isEmpty == false)
         var translationInstalled = false
+        var sourceISOCode: String? = nil
         if translate {
             // Apple translate needs a KNOWN source language (it can't auto-detect
             // from audio) and an already-installed source->English pack. Either
             // missing -> WhisperKit, which auto-detects and translates ~99
             // languages. Checked BEFORE the auth prompt so we don't nag.
             guard languageLocked, let iso = AppleSpeechLocale.isoCode(for: locale) else { return .whisper }
+            sourceISOCode = iso
+            // Languages where Whisper translates better than Apple stay on Whisper
+            // (e.g. id: Apple leans Malay). Skip the install probe entirely for them.
+            guard !CaptionEngineKind.appleTranslateDenylist.contains(iso) else { return .whisper }
             translationInstalled = await AppleTranslationService.isInstalled(sourceISOCode: iso)
             guard translationInstalled else { return .whisper }
         }
@@ -444,7 +449,8 @@ final class AppState: ObservableObject {
             authorized: authorized,
             osHasApple: true,
             languageLocked: languageLocked,
-            translationInstalled: translationInstalled
+            translationInstalled: translationInstalled,
+            sourceISOCode: sourceISOCode
         )
     }
 

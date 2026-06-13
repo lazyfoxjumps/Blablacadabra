@@ -25,15 +25,23 @@ public enum CaptionEngineKind: Equatable, Sendable {
     case appleTranslate
     case whisper
 
+    /// Source languages (ISO 639-1) whose Apple `Translation` quality we judge
+    /// worse than WhisperKit's, so we keep them on Whisper for translation even
+    /// when Apple's pack is installed. `id` (Indonesian): Apple's on-device model
+    /// leans Malay; Whisper's id->en reads truer. Transcribe-only (`appleTranscribe`)
+    /// is unaffected — this only steers the translate path.
+    public static let appleTranslateDenylist: Set<String> = ["id"]
+
     /// Pure engine choice (no OS calls, so it's unit-testable). The shared gate
     /// for any Apple path: the OS has the API, the locale is Apple-supported for
     /// transcription, and Speech Recognition is authorized. Then:
     /// - translate OFF -> `appleTranscribe`.
     /// - translate ON -> `appleTranslate` ONLY when the source language is locked
     ///   (Apple can't auto-detect from audio like Whisper, and it's also the
-    ///   translation source) AND the source->English pack is already installed (we
-    ///   never trigger a download here, to honor the no-nag rule). Otherwise
-    ///   WhisperKit, which auto-detects and translates ~99 languages.
+    ///   translation source), the source->English pack is already installed (we
+    ///   never trigger a download here, to honor the no-nag rule), AND the source
+    ///   language is not on `appleTranslateDenylist`. Otherwise WhisperKit, which
+    ///   auto-detects and translates ~99 languages.
     /// Any miss falls back to WhisperKit.
     public static func select(
         translate: Bool,
@@ -41,11 +49,13 @@ public enum CaptionEngineKind: Equatable, Sendable {
         authorized: Bool,
         osHasApple: Bool,
         languageLocked: Bool = false,
-        translationInstalled: Bool = false
+        translationInstalled: Bool = false,
+        sourceISOCode: String? = nil
     ) -> CaptionEngineKind {
         guard osHasApple, authorized, localeSupported else { return .whisper }
         guard translate else { return .appleTranscribe }
         guard languageLocked, translationInstalled else { return .whisper }
+        if let iso = sourceISOCode, appleTranslateDenylist.contains(iso) { return .whisper }
         return .appleTranslate
     }
 }
