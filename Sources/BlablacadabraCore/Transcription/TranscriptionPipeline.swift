@@ -19,7 +19,7 @@ public enum CaptionEvent: Sendable, Equatable {
 /// Backpressure policy: transcription runs one chunk at a time. Finals queue
 /// in order and are never dropped; partials only keep the newest (a stale
 /// partial is worthless once a fresher one exists).
-public actor TranscriptionPipeline {
+public actor TranscriptionPipeline: CaptionPipeline {
     private let source: AudioSource
     private let engine: TranscriptionEngine
     private let vadConfig: VADConfiguration
