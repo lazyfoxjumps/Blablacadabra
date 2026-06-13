@@ -56,6 +56,9 @@ struct CaptionLine: Equatable {
     let text: String
     var original: String?
     var origin: CaptionOrigin = .single
+    /// Per-session speaker label (Phase 6 diarization), nil when speaker colors
+    /// are off or the voice hasn't been identified yet.
+    var speaker: SpeakerID?
 }
 
 enum SessionPhase: Equatable {
@@ -122,6 +125,16 @@ final class AppState: ObservableObject {
     /// instances run concurrently safely, whereas one shared instance can't
     /// transcribe two lanes at once. Entries are replaced when the model changes.
     private var preparedEngines: [CaptionOrigin: (model: String, engine: WhisperKitEngine)] = [:]
+
+    /// The per-session voice labeler (Phase 6). One shared instance across all
+    /// lanes so speaker numbering is global (S1 means one person whether they're
+    /// on the system lane or the mic lane). Kept across restarts/pause so numbers
+    /// don't churn when the user flips a pill; `reset()` only on a full stop.
+    private var speakerIdentifier: SpeakerIdentifier?
+    /// Which speakers have actually been heard this session. Chips and colors
+    /// stay off until a SECOND voice appears (so a one-person session looks
+    /// exactly as it did before the feature existed).
+    @Published private(set) var speakersSeen: Set<SpeakerID> = []
 
     // MARK: Audio devices (for the Audio settings section)
 
@@ -277,6 +290,16 @@ final class AppState: ObservableObject {
     @Published var calmMode: Bool {
         didSet { defaults.set(calmMode, forKey: "calmMode") }
     }
+    /// "Color by speaker": each voice gets its own caption color + chip. ON by
+    /// default for source = System or Both (the multi-voice cases); a mic-only
+    /// session is one person, so it defaults off there. Flipping it mid-session
+    /// restarts so the diarizer is added or dropped.
+    @Published var colorBySpeaker: Bool {
+        didSet {
+            defaults.set(colorBySpeaker, forKey: "colorBySpeaker")
+            restartIfRunning()
+        }
+    }
     @Published var hideOnSilence: Bool {
         didSet { defaults.set(hideOnSilence, forKey: "hideOnSilence") }
     }
@@ -347,6 +370,11 @@ final class AppState: ObservableObject {
         overlayOpacity = defaults.object(forKey: "overlayOpacity") as? Double ?? 0.9
         overlayWidth = max(AppState.overlayMinWidth, defaults.object(forKey: "overlayWidth") as? Double ?? AppState.overlayMinWidth)
         calmMode = defaults.bool(forKey: "calmMode")
+        // Default ON for the multi-voice sources (System/Both), off for mic-only
+        // (one person). Read the source from defaults again (can't touch
+        // `self.sourceChoice` until every stored property is initialized).
+        let storedSource = CaptureSourceChoice(rawValue: defaults.string(forKey: "sourceChoice") ?? "") ?? .system
+        colorBySpeaker = (defaults.object(forKey: "colorBySpeaker") as? Bool) ?? (storedSource != .mic)
         hideOnSilence = defaults.bool(forKey: "hideOnSilence")
         clickThrough = defaults.bool(forKey: "clickThrough")
         captionPresetID = defaults.string(forKey: "captionPresetID") ?? "theme"
@@ -569,7 +597,8 @@ final class AppState: ObservableObject {
                             task: self.translate ? .translate : .transcribe,
                             spokenLanguage: self.spokenLanguageCode,
                             showOriginal: self.showOriginal,
-                            inputGain: Float(self.inputGain)
+                            inputGain: Float(self.inputGain),
+                            speakerIdentifier: self.activeSpeakerIdentifier()
                         )
                     }
                     // Drive the live input level meter off the (gain-applied)
@@ -652,6 +681,17 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The shared per-session voice labeler, created on first use (so a session
+    /// that never turns on speaker colors pays nothing). Returns nil when the
+    /// feature is off; one instance feeds every lane so numbering is global.
+    private func activeSpeakerIdentifier() -> SpeakerIdentifier? {
+        guard colorBySpeaker else { return nil }
+        if let existing = speakerIdentifier { return existing }
+        let created = SpeakerIdentifier()
+        speakerIdentifier = created
+        return created
+    }
+
     /// A prepared engine for a lane, reused while the model is unchanged. Each
     /// lane origin keeps its own (Both mode needs two live instances).
     private func engine(for origin: CaptionOrigin) -> WhisperKitEngine {
@@ -676,6 +716,12 @@ final class AppState: ObservableObject {
         endSession(newPhase: .idle)
         lines = []
         partial = nil
+        // A full stop ends the session: clear the voice clusters so the next
+        // start renumbers from Speaker 1 (restart/pause keep them, on purpose).
+        speakersSeen = []
+        if let identifier = speakerIdentifier {
+            Task { await identifier.reset() }
+        }
     }
 
     /// Pause keeps the last lines on screen, per the design kit.
@@ -769,13 +815,15 @@ final class AppState: ObservableObject {
             partial = normalizer.normalize(text)
             partialOrigin = origin
             noteDetectedLanguage(language)
-        case .final(let text, let original, let language, _):
+        case .final(let text, let original, let language, let speaker):
             // Only clear the partial if it was this lane's; the other Both-mode
             // lane may still have a live partial we shouldn't wipe.
             if partialOrigin == origin { partial = nil }
+            if let speaker { speakersSeen.insert(speaker) }
             // Normalize the English headline; leave the original untouched
             // (it's foreign-language text, not English to re-spell).
-            lines.append(CaptionLine(text: normalizer.normalize(text), original: original, origin: origin))
+            lines.append(CaptionLine(
+                text: normalizer.normalize(text), original: original, origin: origin, speaker: speaker))
             noteDetectedLanguage(language)
             if lines.count > 8 { lines.removeFirst(lines.count - 8) }
             applyPendingThemeIfQuiet()
@@ -886,6 +934,45 @@ final class AppState: ObservableObject {
             return (text, background)
         }
         return (theme.captionText, theme.captionBackground)
+    }
+
+    // MARK: - Speaker colors (Phase 6)
+
+    /// Whether to show the leading speaker chip on caption lines. Stays off
+    /// until a SECOND distinct voice has been heard, so a one-person session
+    /// looks exactly as it did before the feature existed.
+    var showSpeakerLabels: Bool {
+        colorBySpeaker && speakersSeen.count > 1
+    }
+
+    /// Whether speaker COLOR (not just the chip) is applied. System "Increase
+    /// contrast" pins captions to one max-contrast pair, which disables the
+    /// colors; the chip stays as the non-color signal.
+    var speakerColorsEnabled: Bool {
+        showSpeakerLabels && !increaseContrast
+    }
+
+    /// The caption text color for a given speaker. Falls back to the base
+    /// caption text when colors are off, the speaker is unknown, or the speaker
+    /// index runs past the available distinct colors (the chip disambiguates).
+    func speakerColor(for speaker: SpeakerID?) -> RGB {
+        let base = captionColors.text
+        guard speakerColorsEnabled, let speaker else { return base }
+        let palette = SpeakerPalette.colors(text: base, background: captionColors.background)
+        switch speaker {
+        case .speaker(let n):
+            // 1-based: Speaker 1 is the base text color (palette index 0).
+            return palette[min(max(0, n - 1), palette.count - 1)]
+        case .other:
+            return palette.last ?? base
+        }
+    }
+
+    /// The chip color for a speaker. Same as the text color when colors are on;
+    /// drops to the base text (a plain monochrome "S1" label) when Increase
+    /// Contrast is on, so the chip never reintroduces color the user turned off.
+    func speakerChipColor(for speaker: SpeakerID?) -> RGB {
+        speakerColorsEnabled ? speakerColor(for: speaker) : captionColors.text
     }
 
     /// Theme changes never land mid-speech: if an utterance is in flight the

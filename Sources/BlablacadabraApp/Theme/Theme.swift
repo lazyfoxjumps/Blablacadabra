@@ -97,6 +97,58 @@ struct CaptionPreset: Identifiable, Equatable {
     ]
 }
 
+/// Per-speaker caption foregrounds (Phase 6 diarization). Speaker 1 always
+/// keeps the user's chosen caption text color, so turning the feature on
+/// changes nothing until a second voice appears. Speakers 2+ draw from MP072
+/// colors that both read clearly on the caption background AND look distinct
+/// from each other and from Speaker 1.
+///
+/// Floor is 4.5:1 (WCAG AAA for LARGE text, which captions are: default 21pt,
+/// well past the 18pt large-text bar). 7:1 is the AAA bar for *body* text; on
+/// this warm, earthy six-color palette it leaves light mode with almost no
+/// distinct foregrounds, so we use the (still strict) large-text AAA floor and
+/// lean on the always-present chip as the real non-color signal. A short list
+/// is fine: speakers past the distinct-color count reuse a color but keep a
+/// unique chip ("S3", "S4", "S+").
+enum SpeakerPalette {
+    /// Minimum caption-background contrast for a speaker color (large-text AAA).
+    static let contrastFloor: Double = 4.5
+    /// Two colors closer than this (squared sRGB distance) read as "the same",
+    /// so the later one is dropped (keeps Palladian/Oatmeal-style near-dupes and
+    /// navy/near-black pairs from looking like one color with two chips).
+    static let minDistanceSquared: Double = 0.05
+
+    /// Candidate foregrounds, ordered for visual distinctness (warm orange,
+    /// light cream, deep navy, rust, tan, near-black). All MP072.
+    private static let candidates = [
+        "#FFB162", // Burning Flame
+        "#EEE9DF", // Palladian
+        "#2C3B4D", // Blue Fantastic
+        "#A35139", // Truffle Trouble
+        "#C9C1B1", // Oatmeal
+        "#1B2632", // Abyssal
+    ]
+
+    /// Ordered speaker foregrounds for the given caption colors. Index 0 is the
+    /// user's text color (Speaker 1); indices 1+ are the vetted distinct colors.
+    /// At least one entry (the base text) always comes back.
+    static func colors(text: RGB, background: RGB) -> [RGB] {
+        var chosen = [text]
+        for hex in candidates {
+            guard let candidate = RGB(hexString: hex) else { continue }
+            guard RGB.contrast(candidate, background) >= contrastFloor else { continue }
+            guard chosen.allSatisfy({ distanceSquared($0, candidate) >= minDistanceSquared }) else { continue }
+            chosen.append(candidate)
+        }
+        return chosen
+    }
+
+    private static func distanceSquared(_ a: RGB, _ b: RGB) -> Double {
+        let dr = a.red - b.red, dg = a.green - b.green, db = a.blue - b.blue
+        return dr * dr + dg * dg + db * db
+    }
+}
+
 /// Everything the overlay and settings need to draw for the current mode.
 /// Dark: Abyssal deepest layers, Blue Fantastic surfaces, Palladian text,
 /// Oatmeal secondary, Burning Flame the single accent. Light: warm paper

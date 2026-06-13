@@ -111,14 +111,18 @@ struct OverlayView: View {
     @ViewBuilder
     private func captions(textColor: RGB) -> some View {
         // The current line is the live partial (English only, no original yet)
-        // or, when nothing is being spoken, the last committed line.
+        // or, when nothing is being spoken, the last committed line. A partial
+        // inherits the previous line's speaker (its own label lands on finalize).
         let current: CaptionLine? = state.partial.map {
-            CaptionLine(text: $0, original: nil, origin: state.partialOrigin)
+            CaptionLine(
+                text: $0, original: nil, origin: state.partialOrigin,
+                speaker: state.lines.last?.speaker)
         } ?? state.lines.last
         if state.calmMode {
             // Calm mode: one line, max contrast, no dimming. Original still
             // sits above it when bilingual is on (it's the point of the mode
-            // for the user who needs both).
+            // for the user who needs both). The speaker chip stays; per-speaker
+            // color does not (calm mode = one max-contrast color, by design).
             currentLine(current, textColor: textColor)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -129,10 +133,11 @@ struct OverlayView: View {
                     // History shows the English line only (calm, uncluttered).
                     let age = history.count - index
                     let opacity = dimming(forAge: age)
-                    originLine(line.origin, textColor: textColor, opacity: opacity) {
+                    let color = lineColor(line, base: textColor)
+                    originLine(line, textColor: textColor, opacity: opacity) {
                         Text(line.text)
                             .font(state.fontChoice.font(size: max(13, state.fontSize * 0.72)))
-                            .foregroundStyle(textColor.color.opacity(opacity))
+                            .foregroundStyle(color.color.opacity(opacity))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -144,47 +149,76 @@ struct OverlayView: View {
 
     /// The current line, with the original-language text above it when
     /// bilingual mode supplied one. The original (the language being translated
-    /// FROM) is drawn in the caption text color, only lightly dimmed, so it
+    /// FROM) is drawn in the same (speaker) color, only lightly dimmed, so it
     /// stays clearly readable instead of fading into the background.
     @ViewBuilder
     private func currentLine(_ line: CaptionLine?, textColor: RGB) -> some View {
+        let color = line.map { lineColor($0, base: textColor) } ?? textColor
         let body = VStack(alignment: .leading, spacing: 3) {
             if let original = line?.original, !original.isEmpty {
                 Text(original)
                     .font(state.fontChoice.font(size: max(13, state.fontSize * 0.78)))
-                    .foregroundStyle(textColor.color.opacity(0.88))
+                    .foregroundStyle(color.color.opacity(0.88))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(line?.text ?? quietLine)
                 .font(state.fontChoice.font(size: state.fontSize, weight: .medium))
-                .foregroundStyle(textColor.color.opacity(line == nil ? 0.6 : 1))
+                .foregroundStyle(color.color.opacity(line == nil ? 0.6 : 1))
                 .fixedSize(horizontal: false, vertical: true)
         }
-        originLine(line?.origin ?? .single, textColor: textColor, opacity: 1) {
+        originLine(line, textColor: textColor, opacity: 1) {
             body
         }
     }
 
-    /// Prefixes a caption line with a small source marker (speaker / mic icon)
-    /// when running in "Both" mode, so it's clear which side each line came
-    /// from. Single-source sessions show nothing (`.single` has no symbol).
-    /// Words + icon, never color alone: the icon carries a VoiceOver label.
+    /// The caption color for a line: the speaker's color when speaker colors are
+    /// on, otherwise the base caption text. Calm mode always uses the base color
+    /// (one max-contrast line is the whole point of the mode).
+    private func lineColor(_ line: CaptionLine, base: RGB) -> RGB {
+        state.calmMode ? base : state.speakerColor(for: line.speaker)
+    }
+
+    /// Prefixes a caption line with its leading markers: the speaker chip
+    /// ("S1"...) when speaker colors are on AND more than one voice has been
+    /// heard, then the "Both"-mode source icon (speaker / mic). Each marker
+    /// carries a VoiceOver label so meaning never rides on color alone.
     @ViewBuilder
     private func originLine(
-        _ origin: CaptionOrigin, textColor: RGB, opacity: Double,
+        _ line: CaptionLine?, textColor: RGB, opacity: Double,
         @ViewBuilder _ content: () -> some View
     ) -> some View {
-        if let symbol = origin.symbol {
+        let origin = line?.origin ?? .single
+        let chipSpeaker: SpeakerID? = state.showSpeakerLabels ? line?.speaker : nil
+        if origin.symbol != nil || chipSpeaker != nil {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Image(systemName: symbol)
-                    .font(.system(size: max(10, state.fontSize * 0.5), weight: .semibold))
-                    .foregroundStyle(textColor.color.opacity(opacity * 0.7))
-                    .accessibilityLabel(origin.spokenLabel)
+                if let speaker = chipSpeaker {
+                    speakerChip(speaker, opacity: opacity)
+                }
+                if let symbol = origin.symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: max(10, state.fontSize * 0.5), weight: .semibold))
+                        .foregroundStyle(textColor.color.opacity(opacity * 0.7))
+                        .accessibilityLabel(origin.spokenLabel)
+                }
                 content()
             }
         } else {
             content()
         }
+    }
+
+    /// Small colored chip ("S1") leading a line, the non-color-dependent speaker
+    /// signal (the label reads as words to VoiceOver / on hover).
+    private func speakerChip(_ speaker: SpeakerID, opacity: Double) -> some View {
+        let chipColor = state.speakerChipColor(for: speaker)
+        return Text(speaker.chipLabel)
+            .font(AppFont.nunito(max(10, state.fontSize * 0.5), .bold))
+            .foregroundStyle(chipColor.color.opacity(opacity))
+            .padding(.vertical, 1)
+            .padding(.horizontal, 5)
+            .background(Capsule().fill(chipColor.color.opacity(opacity * 0.16)))
+            .accessibilityLabel(speaker.spokenLabel)
+            .help(speaker.spokenLabel)
     }
 
     /// Idle copy, playful is allowed here (empty states only).

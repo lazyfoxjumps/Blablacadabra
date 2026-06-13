@@ -154,3 +154,18 @@ import Testing
         #expect(sawFinal)
     }
 }
+
+@Suite struct SpeakerIDLabelTests {
+    @Test func numberedSpeakersGetSAndNumberChips() {
+        #expect(SpeakerID.speaker(1).chipLabel == "S1")
+        #expect(SpeakerID.speaker(2).chipLabel == "S2")
+        #expect(SpeakerID.speaker(1).spokenLabel == "Speaker 1")
+    }
+
+    @Test func overflowSpeakerHasDistinctMarkers() {
+        #expect(SpeakerID.other.chipLabel == "S+")
+        #expect(SpeakerID.other.spokenLabel == "Another speaker")
+        // The overflow chip must not collide with any numbered chip.
+        #expect(SpeakerID.other.chipLabel != SpeakerID.speaker(5).chipLabel)
+    }
+}

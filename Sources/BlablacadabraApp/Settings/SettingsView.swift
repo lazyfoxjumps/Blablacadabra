@@ -164,8 +164,63 @@ struct SettingsView: View {
                     }
                     contrastVerdict(theme: theme)
                 }
+
+                colorBySpeaker(theme: theme)
             }
         }
+    }
+
+    /// "Color by speaker" toggle + a static preview of the speaker chips/colors,
+    /// so the user sees exactly what the feature does before turning it on.
+    private func colorBySpeaker(theme: ResolvedTheme) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $state.colorBySpeaker) {
+                behaviorLabel(
+                    "Color by speaker",
+                    detail: "When more than one person is talking, each voice gets its own color and a small label (S1, S2). Color is never the only marker. Works best with System or Both.",
+                    theme: theme
+                )
+            }
+            .toggleStyle(FlameToggleStyle())
+
+            if state.colorBySpeaker {
+                speakerPreviewRow(theme: theme)
+            }
+        }
+    }
+
+    /// A non-interactive row showing the first few speaker styles on the current
+    /// caption background (the same colors the overlay would use).
+    private func speakerPreviewRow(theme: ResolvedTheme) -> some View {
+        let colors = state.captionColors
+        let palette = SpeakerPalette.colors(text: colors.text, background: colors.background)
+        // Show up to four speakers + the overflow bucket.
+        let samples: [(SpeakerID, RGB)] = (1...4).map { n in
+            (.speaker(n), palette[min(n - 1, palette.count - 1)])
+        } + [(.other, palette.last ?? colors.text)]
+        return HStack(spacing: 8) {
+            ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
+                HStack(spacing: 4) {
+                    Text(sample.0.chipLabel)
+                        .font(AppFont.nunito(10, .bold))
+                        .foregroundStyle(sample.1.color)
+                        .padding(.vertical, 1)
+                        .padding(.horizontal, 4)
+                        .background(Capsule().fill(sample.1.color.opacity(0.16)))
+                    Text("Aa")
+                        .font(AppFont.nunito(12, .medium))
+                        .foregroundStyle(sample.1.color)
+                }
+                .help(sample.0.spokenLabel)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(colors.background.color)
+        )
+        .accessibilityLabel("Preview of speaker colors and labels")
     }
 
     /// Circular swatches (mockup style): background-colored circles with the
