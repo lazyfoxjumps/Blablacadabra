@@ -4,13 +4,27 @@ import Foundation
 /// What the caption UI consumes. `language` is the ISO 639-1 code of the
 /// detected source language (nil when unknown), used to show the translation
 /// direction. `original` is the source-language text shown above the
-/// translation in bilingual mode (finals only; nil otherwise).
+/// translation in bilingual mode (finals only; nil otherwise). `speaker` is the
+/// per-session speaker label when speaker colors are on (nil = feature off, or
+/// not yet labeled); finals carry it, partials inherit the previous line's.
 public enum CaptionEvent: Sendable, Equatable {
     /// Rolling hypothesis for the utterance in progress; replaces the
     /// previous partial on screen.
-    case partial(String, language: String? = nil)
+    case partial(String, language: String? = nil, speaker: SpeakerID? = nil)
     /// The utterance is done; commit the line and start a fresh one.
-    case final(String, original: String? = nil, language: String? = nil)
+    case final(String, original: String? = nil, language: String? = nil, speaker: SpeakerID? = nil)
+
+    /// Returns a copy of this event with `speaker` attached. A nil argument
+    /// leaves the event unchanged, so non-diarized events pass through cleanly.
+    func withSpeaker(_ speaker: SpeakerID?) -> CaptionEvent {
+        guard let speaker else { return self }
+        switch self {
+        case .partial(let text, let language, _):
+            return .partial(text, language: language, speaker: speaker)
+        case .final(let text, let original, let language, _):
+            return .final(text, original: original, language: language, speaker: speaker)
+        }
+    }
 }
 
 /// Wires an `AudioSource` through VAD chunking into a `TranscriptionEngine`
@@ -23,6 +37,12 @@ public actor TranscriptionPipeline: CaptionPipeline {
     private let source: AudioSource
     private let engine: TranscriptionEngine
     private let vadConfig: VADConfiguration
+
+    /// Optional per-speaker labeler (Phase 6). When set, each FINAL utterance is
+    /// run through it (concurrently with transcription, so it adds no latency)
+    /// and the resulting `SpeakerID` rides on the final event. nil = speaker
+    /// colors off; the pipeline behaves exactly as before.
+    private let speakerIdentifier: SpeakerIdentifying?
 
     /// The translate toggle. Settable mid-stream; applies from the next chunk.
     public private(set) var task: TranscriptionTask
@@ -71,6 +91,7 @@ public actor TranscriptionPipeline: CaptionPipeline {
         spokenLanguage: String? = nil,
         showOriginal: Bool = false,
         inputGain: Float = 1,
+        speakerIdentifier: SpeakerIdentifying? = nil,
         vadConfig: VADConfiguration = VADConfiguration()
     ) {
         self.source = source
@@ -79,6 +100,7 @@ public actor TranscriptionPipeline: CaptionPipeline {
         self.spokenLanguage = (spokenLanguage?.isEmpty == true) ? nil : spokenLanguage
         self.showOriginal = showOriginal
         self.inputGain = max(0.1, inputGain)
+        self.speakerIdentifier = speakerIdentifier
         self.vadConfig = vadConfig
     }
 
@@ -211,26 +233,45 @@ public actor TranscriptionPipeline: CaptionPipeline {
         // skips detection; auto mode detects once and reuses (see below).
         let language = await resolvedLanguage(for: samples, isFinal: isFinal)
 
+        // Partials never carry a speaker (they inherit the previous line's on
+        // screen), so there's nothing to run concurrently.
+        guard isFinal else {
+            return await producePartial(samples: samples, language: language)
+        }
+
+        // Final: diarize CONCURRENTLY with transcription. The embedding (~26ms
+        // in the spike) finishes well inside Whisper's decode, so attaching the
+        // speaker costs no extra latency, and captions never block on it: if it
+        // somehow yields nil, the line just commits unlabeled.
+        async let speaker = identifySpeaker(samples)
+        let event = await produceFinal(samples: samples, language: language)
+        return event?.withSpeaker(await speaker)
+    }
+
+    /// The rolling-partial path: translation-only while translating (keeps the
+    /// live latency the user feels low), plain transcription otherwise.
+    private func producePartial(samples: [Float], language: String?) async -> CaptionEvent? {
+        guard task == .translate else {
+            let out = (try? await engine.transcribe(samples, task: .transcribe, language: language)) ?? .empty
+            guard !out.text.isEmpty else { return nil }
+            return .partial(out.text, language: language ?? out.detectedLanguage)
+        }
+        let english = ((try? await engine.transcribe(samples, task: .translate, language: language)) ?? .empty).text
+        return english.isEmpty ? nil : .partial(english, language: language)
+    }
+
+    /// The finalized-utterance path (no speaker yet; the caller attaches it).
+    private func produceFinal(samples: [Float], language: String?) async -> CaptionEvent? {
         guard task == .translate else {
             // Plain transcription: a locked language is honored; otherwise
             // English is assumed (auto-detection is translate-only, see
             // resolvedLanguage).
             let out = (try? await engine.transcribe(samples, task: .transcribe, language: language)) ?? .empty
             guard !out.text.isEmpty else { return nil }
-            let reported = language ?? out.detectedLanguage
-            return isFinal
-                ? .final(out.text, original: nil, language: reported)
-                : .partial(out.text, language: reported)
+            return .final(out.text, original: nil, language: language ?? out.detectedLanguage)
         }
 
-        // Translating. Partials stay translation-only (keep the live latency
-        // the user feels low).
-        if !isFinal {
-            let english = ((try? await engine.transcribe(samples, task: .translate, language: language)) ?? .empty).text
-            return english.isEmpty ? nil : .partial(english, language: language)
-        }
-
-        // Final: force the resolved language on both passes. The translate task
+        // Force the resolved language on both passes. The translate task
         // otherwise reports the target ("en"), and the transcribe task would
         // come back in English instead of the original.
         let english = ((try? await engine.transcribe(samples, task: .translate, language: language)) ?? .empty).text
@@ -242,6 +283,13 @@ public actor TranscriptionPipeline: CaptionPipeline {
             original = src.text.isEmpty ? nil : src.text
         }
         return .final(english, original: original, language: language)
+    }
+
+    /// Labels a finalized utterance, or nil when speaker colors are off or the
+    /// labeler has nothing for this chunk. Always fail-soft.
+    private func identifySpeaker(_ samples: [Float]) async -> SpeakerID? {
+        guard let speakerIdentifier else { return nil }
+        return await speakerIdentifier.identify(samples: samples)
     }
 
     /// The language to decode this chunk as. A locked `spokenLanguage` wins and

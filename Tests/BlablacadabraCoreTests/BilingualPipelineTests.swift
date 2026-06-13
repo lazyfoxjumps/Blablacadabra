@@ -118,7 +118,7 @@ private func collect(_ pipeline: TranscriptionPipeline) async throws -> [Caption
             source: ScriptedSource(), engine: engine, task: .translate, showOriginal: true
         )
         let finals = try await collect(pipeline).compactMap { event -> (String, String?, String?)? in
-            if case let .final(text, original, language) = event { return (text, original, language) }
+            if case let .final(text, original, language, _) = event { return (text, original, language) }
             return nil
         }
         #expect(finals.count == 1)
@@ -139,7 +139,7 @@ private func collect(_ pipeline: TranscriptionPipeline) async throws -> [Caption
             source: ScriptedSource(), engine: engine, task: .translate, showOriginal: false
         )
         let finals = try await collect(pipeline).compactMap { event -> (String, String?, String?)? in
-            if case let .final(text, original, language) = event { return (text, original, language) }
+            if case let .final(text, original, language, _) = event { return (text, original, language) }
             return nil
         }
         #expect(finals.count == 1)
@@ -158,7 +158,7 @@ private func collect(_ pipeline: TranscriptionPipeline) async throws -> [Caption
             source: ScriptedSource(), engine: engine, task: .transcribe, showOriginal: true
         )
         let finals = try await collect(pipeline).compactMap { event -> String? in
-            if case let .final(text, _, _) = event { return text }
+            if case let .final(text, _, _, _) = event { return text }
             return nil
         }
         #expect(finals.count == 1)
@@ -182,7 +182,7 @@ private func collect(_ pipeline: TranscriptionPipeline) async throws -> [Caption
             spokenLanguage: "id", showOriginal: false
         )
         let finals = try await collect(pipeline).compactMap { event -> (String, String?)? in
-            if case let .final(text, _, language) = event { return (text, language) }
+            if case let .final(text, _, language, _) = event { return (text, language) }
             return nil
         }
         #expect(finals.count == 1)

@@ -126,9 +126,9 @@ public actor AppleTranslatingPipeline: CaptionPipeline {
 
     private func ingest(_ event: CaptionEvent) {
         switch event {
-        case .partial(let text, _):
+        case .partial(let text, _, _):
             pendingPartial = text
-        case .final(let text, _, _):
+        case .final(let text, _, _, _):
             finalQueue.append(text)
             pendingPartial = nil // the final supersedes its own partials
         }

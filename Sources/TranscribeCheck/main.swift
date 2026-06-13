@@ -104,10 +104,10 @@ Task {
         var partials = 0
         for await event in captions {
             switch event {
-            case .partial(let text, _):
+            case .partial(let text, _, _):
                 partials += 1
                 FileHandle.standardOutput.write(Data("\r  ~ \(text)\u{1B}[K".utf8))
-            case .final(let text, let original, let language):
+            case .final(let text, let original, let language, _):
                 finals += 1
                 FileHandle.standardOutput.write(Data("\r\u{1B}[K".utf8))
                 // When translating, show the detected source language and,

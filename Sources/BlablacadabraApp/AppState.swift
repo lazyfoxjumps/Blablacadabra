@@ -763,13 +763,13 @@ final class AppState: ObservableObject {
     private func handle(_ event: CaptionEvent, origin: CaptionOrigin) {
         lastEventAt = Date()
         switch event {
-        case .partial(let text, let language):
+        case .partial(let text, let language, _):
             // Partials get the same spelling pass as finals so a word never
             // visibly flips form ("color" -> "colour") at the commit.
             partial = normalizer.normalize(text)
             partialOrigin = origin
             noteDetectedLanguage(language)
-        case .final(let text, let original, let language):
+        case .final(let text, let original, let language, _):
             // Only clear the partial if it was this lane's; the other Both-mode
             // lane may still have a live partial we shouldn't wipe.
             if partialOrigin == origin { partial = nil }
