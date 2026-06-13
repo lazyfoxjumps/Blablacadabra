@@ -757,6 +757,13 @@ final class AppState: ObservableObject {
         if let code = spokenLanguageCode {
             return SpokenLanguage.displayName(forCode: code) ?? "Auto"
         }
+        // Not translating, no lock: auto-detect is translate-only, so plain
+        // transcription always runs in the chosen English variant. Name that
+        // variant outright ("English (Australia)") instead of a vague
+        // "Auto · English" so the chip says exactly what's on screen.
+        if !translate {
+            return captionLocale.label
+        }
         if let detected = SpokenLanguage.displayName(forCode: detectedLanguageCode) {
             return "Auto · \(detected)"
         }

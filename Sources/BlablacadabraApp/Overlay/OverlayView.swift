@@ -92,12 +92,16 @@ struct OverlayView: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
             }
+            // Color the label content directly: the borderless-button menu
+            // style otherwise overrides it with a default (dark) control color,
+            // which read as black instead of the caption color.
+            .foregroundStyle(textColor.color.opacity(0.9))
             .padding(.vertical, 2)
             .padding(.horizontal, 6)
             .background(Capsule().fill(textColor.color.opacity(0.12)))
             .contentShape(Capsule())
         }
-        .foregroundStyle(textColor.color.opacity(0.8))
+        .tint(textColor.color)
         .help("Pick the spoken language, or leave it on Auto")
         .accessibilityLabel("Spoken language: \(state.spokenLanguageDisplay)")
     }
@@ -203,8 +207,11 @@ struct OverlayView: View {
     }
 
     private func dimming(forAge age: Int) -> Double {
-        // age 1 (newest history) ~0.62 down to ~0.26 for age 4.
-        max(0.26, 0.74 - Double(age) * 0.12)
+        // Older lines fade by recency, but never below a floor that keeps them
+        // clearly in the caption color. A harsher fade washed toward near-black
+        // on a dark card and read as "wrong color" rather than "older".
+        // age 1 ~0.77 down to a 0.55 floor by age 3+.
+        max(0.55, 0.88 - Double(age) * 0.11)
     }
 
     // MARK: Edge states
