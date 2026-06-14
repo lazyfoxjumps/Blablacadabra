@@ -559,6 +559,7 @@ final class AppState: ObservableObject {
                                 locale: locale,
                                 showOriginal: self.showOriginal,
                                 inputGain: Float(self.inputGain),
+                                speakerIdentifier: self.activeSpeakerIdentifier(),
                                 installProgress: installProgress
                             )
                         } else {
@@ -567,6 +568,7 @@ final class AppState: ObservableObject {
                                 source: config.source,
                                 locale: locale,
                                 inputGain: Float(self.inputGain),
+                                speakerIdentifier: self.activeSpeakerIdentifier(),
                                 installProgress: installProgress
                             )
                         }

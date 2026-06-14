@@ -33,7 +33,7 @@ public actor SpeakerIdentifier: SpeakerIdentifying {
     /// every utterance for a whole session.
     private var loadFailed = false
 
-    public init(maxSpeakers: Int = 4, threshold: Float = 0.65) {
+    public init(maxSpeakers: Int = 4, threshold: Float = 0.5) {
         self.clusterer = SpeakerClusterer(maxSpeakers: maxSpeakers, threshold: threshold)
     }
 

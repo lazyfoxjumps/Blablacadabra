@@ -22,7 +22,13 @@ public struct SpeakerClusterer: Sendable {
     public let maxSpeakers: Int
     /// Minimum cosine similarity to fold a new utterance into an existing
     /// cluster. Higher = stricter (more clusters); lower = more merging. The
-    /// Step 1 spike landed on ~0.65 as a sane default for this model.
+    /// Step 1 spike measured same-voice similarity ~0.569 and different-voice
+    /// ~0.399 for this model, so the gate has to sit BETWEEN those two clouds.
+    /// 0.5 does: above 0.399 (two different people stay apart) but below 0.569
+    /// (the same person merges instead of spawning a fresh color). An earlier
+    /// 0.65 sat ABOVE the same-voice average, so one voice kept failing its own
+    /// merge test and burned through a new color every utterance until it
+    /// overflowed to `.other` (the live two-person over-clustering bug).
     public let threshold: Float
 
     /// L2-normalized centroid per active cluster; index + 1 is the speaker
@@ -32,7 +38,7 @@ public struct SpeakerClusterer: Sendable {
     /// centroid update.
     private var counts: [Int] = []
 
-    public init(maxSpeakers: Int = 4, threshold: Float = 0.65) {
+    public init(maxSpeakers: Int = 4, threshold: Float = 0.5) {
         self.maxSpeakers = max(1, maxSpeakers)
         self.threshold = threshold
     }

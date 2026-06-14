@@ -62,6 +62,34 @@ import Testing
         #expect(c.assign([]) == .other)
         #expect(c.speakerCount == 0)
     }
+
+    /// Regression for the live two-person over-clustering bug: the default merge
+    /// threshold (0.5) sits between the model's measured different-voice (~0.399)
+    /// and same-voice (~0.569) similarity, so one voice whose successive
+    /// utterances land around ~0.55 stays ONE speaker instead of spawning a new
+    /// color each time (the old 0.65 default sat above same-voice and split it).
+    @Test func sameVoiceAroundMeasuredSimilarityStaysOneSpeaker() {
+        #expect(SpeakerClusterer().threshold == 0.5)
+        var c = SpeakerClusterer() // default threshold
+        // Two unit vectors with cosine ~0.55 (a real same-voice pair per the spike).
+        let a: [Float] = [1, 0, 0, 0, 0, 0, 0, 0]
+        let b: [Float] = [0.55, 0.835, 0, 0, 0, 0, 0, 0] // dot(a,b) ≈ 0.55
+        #expect(c.assign(a) == .speaker(1))
+        #expect(c.assign(b) == .speaker(1)) // ≥ 0.5 -> same voice, no new color
+        #expect(c.speakerCount == 1)
+    }
+
+    /// The flip side: two genuinely different voices (~0.399 similarity, below
+    /// the gate) still get separate numbers, so lowering the threshold didn't
+    /// collapse everyone into Speaker 1.
+    @Test func differentVoicesBelowGateStaySeparate() {
+        var c = SpeakerClusterer() // default threshold 0.5
+        let a: [Float] = [1, 0, 0, 0, 0, 0, 0, 0]
+        let b: [Float] = [0.399, 0.917, 0, 0, 0, 0, 0, 0] // dot(a,b) ≈ 0.399
+        #expect(c.assign(a) == .speaker(1))
+        #expect(c.assign(b) == .speaker(2)) // < 0.5 -> new voice
+        #expect(c.speakerCount == 2)
+    }
 }
 
 @Suite struct CaptionEventSpeakerTests {

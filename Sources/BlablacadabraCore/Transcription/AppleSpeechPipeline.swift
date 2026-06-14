@@ -67,16 +67,38 @@ public enum AppleSpeechLocale {
 /// `CaptionEvent`s, so the overlay, level meter, and Both-mode lanes don't care
 /// which one is running.
 ///
-/// Round 1 is TRANSCRIPTION only: this pipeline is built for a fixed locale, no
-/// translate, no bilingual. `AppState` chooses it only when the Translate toggle
-/// is off and the locale is Apple-supported + authorized; otherwise it builds a
+/// TRANSCRIPTION only (no translate, no bilingual): this pipeline is built for a
+/// fixed locale. `AppState` chooses it only when the Translate toggle is off and
+/// the locale is Apple-supported + authorized; otherwise it builds a
 /// `TranscriptionPipeline`. Because the locale is fixed at `SpeechTranscriber`
 /// init, a language change is handled by an `AppState` restart, not mid-stream.
+///
+/// Speaker colors (Phase 6): when a `speakerIdentifier` is supplied it diarizes
+/// like the Whisper path. Because `SpeechAnalyzer` streams instead of handing us
+/// VAD-finalized utterances, the pipeline buffers the lane's audio and labels the
+/// span belonging to each Apple FINAL (see `utteranceSamples` / `emitFinal`).
 @available(macOS 26, *)
 public actor AppleSpeechPipeline: CaptionPipeline {
     private let source: AudioSource
     private let locale: Locale
     private let isoCode: String?
+
+    /// Optional per-speaker labeler (Phase 6), the SAME instance the WhisperKit
+    /// `TranscriptionPipeline` uses, so speaker numbers stay global across lanes
+    /// and engines. nil = speaker colors off; the pipeline behaves exactly as
+    /// before. Unlike Whisper (which hands the diarizer a tidy VAD-finalized
+    /// utterance), `SpeechAnalyzer` streams, so we accumulate the lane's audio in
+    /// `utteranceSamples` and label the span belonging to each Apple FINAL.
+    private let speakerIdentifier: SpeakerIdentifying?
+
+    /// Pipeline-format (16 kHz mono) samples heard since the last FINAL: the
+    /// audio of the utterance now in progress. Snapshotted + cleared on each
+    /// final to diarize that span. Only accumulated when `speakerIdentifier` is
+    /// set, and capped at `maxUtteranceSamples` so a long monologue can't grow it
+    /// without bound (the most recent audio is the most representative anyway).
+    private var utteranceSamples: [Float] = []
+    /// ~20s of 16 kHz mono audio. Past this we keep the most recent samples.
+    private static let maxUtteranceSamples = Int(AudioPipelineFormat.sampleRate) * 20
     /// Reports asset-install progress (0...1) when Apple has to download an
     /// on-demand locale model. English is pre-installed on this Mac (zero
     /// download), so this fires only for on-demand languages. `AppState` wires it
@@ -107,12 +129,14 @@ public actor AppleSpeechPipeline: CaptionPipeline {
         source: AudioSource,
         locale: Locale,
         inputGain: Float = 1,
+        speakerIdentifier: SpeakerIdentifying? = nil,
         installProgress: (@Sendable (Double) -> Void)? = nil
     ) {
         self.source = source
         self.locale = locale
         self.isoCode = AppleSpeechLocale.isoCode(for: locale)
         self.inputGain = max(0.1, inputGain)
+        self.speakerIdentifier = speakerIdentifier
         self.installProgress = installProgress
     }
 
@@ -173,7 +197,11 @@ public actor AppleSpeechPipeline: CaptionPipeline {
                     let text = String(result.text.characters)
                     guard !text.isEmpty else { continue }
                     if result.isFinal {
-                        self.yieldCaption(.final(text, original: nil, language: isoCode))
+                        // Label the utterance that just finalized (no-op when
+                        // speaker colors are off). Awaited inline so finals stay
+                        // ordered; the embedding is ~26ms, and the labeler is
+                        // fail-soft so captions never block on it.
+                        await self.emitFinal(text)
                     } else {
                         self.yieldCaption(.partial(text, language: isoCode))
                     }
@@ -249,10 +277,40 @@ public actor AppleSpeechPipeline: CaptionPipeline {
                 channel[0][i] = max(-1, min(1, channel[0][i] * gain))
             }
         }
-        audioTap?(Array(UnsafeBufferPointer(start: channel[0], count: frames)))
+        let samples = Array(UnsafeBufferPointer(start: channel[0], count: frames))
+        audioTap?(samples)
+
+        // Accumulate the utterance-in-progress for diarization (gain-applied,
+        // pipeline-format, exactly what FluidAudio wants). Bounded so a long
+        // monologue keeps only its most recent audio.
+        if speakerIdentifier != nil {
+            utteranceSamples.append(contentsOf: samples)
+            if utteranceSamples.count > Self.maxUtteranceSamples {
+                utteranceSamples.removeFirst(utteranceSamples.count - Self.maxUtteranceSamples)
+            }
+        }
 
         guard let converted = convertToAnalyzerFormat(buffer) else { return }
         inputContinuation?.yield(AnalyzerInput(buffer: converted))
+    }
+
+    /// Emits a finalized line with its speaker label attached. Snapshots the
+    /// utterance's audio, runs the labeler (off the actor's critical path while
+    /// it awaits, so `feed` keeps accumulating the next utterance), and yields.
+    private func emitFinal(_ text: String) async {
+        let speaker = await diarizeCurrentUtterance()
+        yieldCaption(.final(text, original: nil, language: isoCode, speaker: speaker))
+    }
+
+    /// Labels the audio heard since the last final, then resets the buffer for
+    /// the next utterance. nil when speaker colors are off or the labeler has
+    /// nothing for this span (model not loaded, too short). Always fail-soft.
+    private func diarizeCurrentUtterance() async -> SpeakerID? {
+        guard let speakerIdentifier else { return nil }
+        let samples = utteranceSamples
+        utteranceSamples = []
+        guard !samples.isEmpty else { return nil }
+        return await speakerIdentifier.identify(samples: samples)
     }
 
     /// Resamples a pipeline-format buffer to the analyzer's format with the one

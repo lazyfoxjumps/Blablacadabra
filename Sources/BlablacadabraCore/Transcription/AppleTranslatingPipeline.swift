@@ -37,9 +37,11 @@ public actor AppleTranslatingPipeline: CaptionPipeline {
     private var consumeTask: Task<Void, Never>?
 
     // Backpressure state (mirrors TranscriptionPipeline): newest partial only,
-    // finals in order, one translation at a time.
+    // finals in order, one translation at a time. Each queued final carries the
+    // speaker label the inner pipeline diarized, so it rides through translation
+    // and onto the emitted English line (partials stay unlabeled, as elsewhere).
     private var pendingPartial: String?
-    private var finalQueue: [String] = []
+    private var finalQueue: [(text: String, speaker: SpeakerID?)] = []
     private var translating = false
     private var innerFinished = false
 
@@ -48,12 +50,14 @@ public actor AppleTranslatingPipeline: CaptionPipeline {
         locale: Locale,
         showOriginal: Bool,
         inputGain: Float = 1,
+        speakerIdentifier: SpeakerIdentifying? = nil,
         installProgress: (@Sendable (Double) -> Void)? = nil
     ) {
         self.inner = AppleSpeechPipeline(
             source: source,
             locale: locale,
             inputGain: inputGain,
+            speakerIdentifier: speakerIdentifier,
             installProgress: installProgress
         )
         let iso = AppleSpeechLocale.isoCode(for: locale)
@@ -128,8 +132,8 @@ public actor AppleTranslatingPipeline: CaptionPipeline {
         switch event {
         case .partial(let text, _, _):
             pendingPartial = text
-        case .final(let text, _, _, _):
-            finalQueue.append(text)
+        case .final(let text, _, _, let speaker):
+            finalQueue.append((text, speaker))
             pendingPartial = nil // the final supersedes its own partials
         }
         pump()
@@ -142,12 +146,16 @@ public actor AppleTranslatingPipeline: CaptionPipeline {
 
         let text: String
         let isFinal: Bool
+        let speaker: SpeakerID?
         if !finalQueue.isEmpty {
-            text = finalQueue.removeFirst()
+            let item = finalQueue.removeFirst()
+            text = item.text
+            speaker = item.speaker
             isFinal = true
         } else if let partial = pendingPartial {
             pendingPartial = nil
             text = partial
+            speaker = nil
             isFinal = false
         } else {
             finishIfDrained()
@@ -159,7 +167,7 @@ public actor AppleTranslatingPipeline: CaptionPipeline {
             let english = await translator.translate(text)
             if let english {
                 if isFinal {
-                    self.yieldCaption(.final(english, original: self.showOriginal ? text : nil, language: self.sourceISO))
+                    self.yieldCaption(.final(english, original: self.showOriginal ? text : nil, language: self.sourceISO, speaker: speaker))
                 } else {
                     self.yieldCaption(.partial(english, language: self.sourceISO))
                 }
