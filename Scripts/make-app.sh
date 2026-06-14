@@ -25,6 +25,15 @@ if [ -d "$REPO/Resources/Fonts" ]; then
   cp -R "$REPO/Resources/Fonts" "$APP/Contents/Resources/Fonts"
 fi
 
+# App icon (Finder / notifications) + the in-app brand logos (light/dark SVGs,
+# loaded at runtime by the brand row).
+if [ -f "$REPO/Resources/AppIcon.icns" ]; then
+  cp "$REPO/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+fi
+if [ -d "$REPO/Resources/Logo" ]; then
+  cp -R "$REPO/Resources/Logo" "$APP/Contents/Resources/Logo"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -40,6 +49,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>Blablacadabra</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
     <string>$VERSION</string>
     <key>CFBundleVersion</key>

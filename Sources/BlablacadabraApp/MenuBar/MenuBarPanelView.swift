@@ -17,16 +17,9 @@ struct MenuBarPanelView: View {
         let theme = state.theme
 
         VStack(alignment: .leading, spacing: 16) {
-            // Brand row: icon placeholder (real app icon later) + wordmark.
+            // Brand row: logo mark (transparent, theme-aware) + wordmark.
             HStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(theme.deepSurface)
-                    .frame(width: 22, height: 22)
-                    .overlay(
-                        Image(systemName: "captions.bubble.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Palette.burningFlame)
-                    )
+                BrandLogo(isDark: theme.isDark, size: 24)
                 Text("blablacadabra")
                     .font(AppFont.jua(15))
                     .foregroundStyle(theme.primaryText)

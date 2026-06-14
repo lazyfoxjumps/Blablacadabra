@@ -54,15 +54,9 @@ struct OnboardingView: View {
 
     private func welcome(theme: ResolvedTheme) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Mascot slot, reserved (the design kit keeps this spot warm).
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(theme.surface)
-                .frame(width: 72, height: 72)
-                .overlay(
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 26))
-                        .foregroundStyle(Palette.burningFlame)
-                )
+            // Brand logo (transparent, theme-aware). Card sits on deepSurface, so
+            // pick the artwork against that: orange star on dark, navy on light.
+            BrandLogo(isDark: theme.isDark, size: 72)
             Text("blablacadabra")
                 .font(AppFont.appName)
                 .foregroundStyle(theme.primaryText)
