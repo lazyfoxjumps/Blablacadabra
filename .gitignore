@@ -20,3 +20,6 @@ Models/
 
 # Local app bundle (built by Scripts/make-app.sh)
 Blablacadabra.app/
+
+# Packaged disk image (shipped as a GitHub release asset, not committed)
+*.dmg

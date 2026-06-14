@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="0.8.0" # Apple Translation fast-path (Round 2): when translating with a LOCKED, Apple-supported source language whose source->English pack is already installed, transcribe via Apple SpeechAnalyzer and translate via Apple's on-device Translation framework (bilingual near-free); else silently fall back to WhisperKit. Round 1 transcribe fast-path unchanged. No new permission prompt (on-device translation of installed packs needs none)
+VERSION="1.0" # First public release. System-wide on-device live captions + on-demand translate-to-English, dual engine (Apple SpeechAnalyzer fast-path with silent WhisperKit fallback), per-speaker colors via on-device diarization, real brand identity. See CHANGELOG.md for the full history.
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra
