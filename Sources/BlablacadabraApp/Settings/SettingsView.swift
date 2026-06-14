@@ -218,10 +218,16 @@ struct SettingsView: View {
     private func speakerPreviewRow(theme: ResolvedTheme) -> some View {
         let colors = state.captionColors
         let palette = SpeakerPalette.colors(text: colors.text, background: colors.background)
-        // Show up to four speakers + the overflow bucket.
-        let samples: [(SpeakerID, RGB)] = (1...4).map { n in
+        // With a declared count, preview exactly that many speakers (no overflow
+        // chip — they capped it). In Auto, show four plus the S+ overflow bucket.
+        let count = state.expectedSpeakerCount
+        let shown = count > 0 ? min(count, palette.count) : 4
+        let numbered: [(SpeakerID, RGB)] = (1...max(1, shown)).map { n in
             (.speaker(n), palette[min(n - 1, palette.count - 1)])
-        } + [(.other, palette.last ?? colors.text)]
+        }
+        let samples: [(SpeakerID, RGB)] = count > 0
+            ? numbered
+            : numbered + [(.other, palette.last ?? colors.text)]
         return HStack(spacing: 8) {
             ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
                 HStack(spacing: 4) {
