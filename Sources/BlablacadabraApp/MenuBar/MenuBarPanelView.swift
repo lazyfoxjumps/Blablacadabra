@@ -167,7 +167,7 @@ struct MenuBarPanelView: View {
             .onChange(of: modelIndex) { _, _ in
                 if !modelSliderEditing { commit() }
             }
-            Text("Bigger is more accurate, smaller is faster.")
+            Text(WhisperKitEngine.caption(for: currentModel))
                 .font(AppFont.footnote)
                 .foregroundStyle(theme.secondaryText)
         }

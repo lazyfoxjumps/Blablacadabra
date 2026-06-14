@@ -538,13 +538,7 @@ struct SettingsView: View {
     }
 
     private func modelCaption(for model: String) -> String {
-        switch model {
-        case "tiny": return "Tiny · fastest, lightest download, least accurate."
-        case "small": return "Small · a good balance, quick to download."
-        case "medium": return "Medium · more accurate, a little slower, bigger download."
-        case WhisperKitEngine.turboModel: return "Turbo · most accurate, biggest download (about 630 MB, first time only)."
-        default: return "Bigger is more accurate, smaller is faster."
-        }
+        WhisperKitEngine.caption(for: model)
     }
 
     // MARK: Audio
