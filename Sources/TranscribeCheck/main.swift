@@ -1,7 +1,7 @@
 // Phase 2 verification harness: runs the full live pipeline
 // (capture -> VAD chunking -> WhisperKit) and prints captions as they land.
 // Partials render in-place on the current line; finals commit as new lines.
-// Usage: transcribe-check [system|mic] [seconds] [model] [--translate]
+// Usage: transcribe-check [system|mic] [seconds] [model] [--translate] [--speakers]
 
 import BlablacadabraCore
 import Foundation
@@ -9,7 +9,10 @@ import Foundation
 var args = Array(CommandLine.arguments.dropFirst())
 let translate = args.contains("--translate")
 let bilingual = args.contains("--bilingual")
-args.removeAll { $0 == "--translate" || $0 == "--bilingual" }
+// --speakers turns on diarization and prefixes each final with its speaker chip
+// ("S1:"/"S2:"/"S+:"). Loads the FluidAudio model (downloads on first run).
+let speakers = args.contains("--speakers")
+args.removeAll { $0 == "--translate" || $0 == "--bilingual" || $0 == "--speakers" }
 
 let sourceName = args.count > 0 ? args[0] : "system"
 let seconds = args.count > 1 ? Double(args[1]) ?? 30 : 30
@@ -20,7 +23,7 @@ switch sourceName {
 case "system": source = SystemAudioCapture()
 case "mic": source = MicCapture()
 default:
-    print("usage: transcribe-check [system|mic] [seconds] [model] [--translate]")
+    print("usage: transcribe-check [system|mic] [seconds] [model] [--translate] [--speakers]")
     exit(2)
 }
 
@@ -41,7 +44,8 @@ Task {
             source: source,
             engine: engine,
             task: translate ? .translate : .transcribe,
-            showOriginal: bilingual
+            showOriginal: bilingual,
+            speakerIdentifier: speakers ? SpeakerIdentifier() : nil
         )
 
         // Track incoming audio so a silent run is diagnosable (no audio
@@ -107,16 +111,18 @@ Task {
             case .partial(let text, _, _):
                 partials += 1
                 FileHandle.standardOutput.write(Data("\r  ~ \(text)\u{1B}[K".utf8))
-            case .final(let text, let original, let language, _):
+            case .final(let text, let original, let language, let speaker):
                 finals += 1
                 FileHandle.standardOutput.write(Data("\r\u{1B}[K".utf8))
+                // With --speakers, prefix each final with its speaker chip.
+                let who = speakers ? "\(speaker?.chipLabel ?? "S?"): " : ""
                 // When translating, show the detected source language and,
                 // in bilingual mode, the original text above the English.
                 if translate, let name = SpokenLanguage.displayName(forCode: language) {
-                    if let original { print("  > [\(name)] \(original)") }
-                    print("  > [\(name) → English] \(text)")
+                    if let original { print("  > \(who)[\(name)] \(original)") }
+                    print("  > \(who)[\(name) → English] \(text)")
                 } else {
-                    print("  > \(text)")
+                    print("  > \(who)\(text)")
                 }
             }
         }

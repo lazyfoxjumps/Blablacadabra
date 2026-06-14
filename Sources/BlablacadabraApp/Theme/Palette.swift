@@ -91,4 +91,32 @@ struct RGB: Equatable {
         let darker = min(a.luminance, b.luminance)
         return (lighter + 0.05) / (darker + 0.05)
     }
+
+    /// OKLab coordinates (perceptually uniform). Used to judge when two colors
+    /// look "the same" to the eye regardless of how light or dark they are.
+    /// Plain sRGB distance collapses every dark color near black, so dark navy
+    /// and dark teal read as identical to it; OKLab keeps them honestly apart.
+    var oklab: (l: Double, a: Double, b: Double) {
+        func linear(_ c: Double) -> Double {
+            c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        let r = linear(red), g = linear(green), bl = linear(blue)
+        let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * bl
+        let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * bl
+        let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * bl
+        let l_ = cbrt(l), m_ = cbrt(m), s_ = cbrt(s)
+        return (
+            0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+            1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+            0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
+        )
+    }
+
+    /// Perceptual distance (OKLab ΔE) between two colors. ~0.02 is the
+    /// just-noticeable threshold; larger means more clearly different.
+    static func perceptualDistance(_ a: RGB, _ b: RGB) -> Double {
+        let x = a.oklab, y = b.oklab
+        let dl = x.l - y.l, da = x.a - y.a, db = x.b - y.b
+        return (dl * dl + da * da + db * db).squareRoot()
+    }
 }
