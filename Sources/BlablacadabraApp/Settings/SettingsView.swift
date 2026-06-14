@@ -184,8 +184,32 @@ struct SettingsView: View {
             .toggleStyle(FlameToggleStyle())
 
             if state.colorBySpeaker {
+                speakerCountPicker(theme: theme)
                 speakerPreviewRow(theme: theme)
             }
+        }
+    }
+
+    /// Lets the user tell the app how many people are talking. A known count is
+    /// what actually stops one voice from fragmenting into S2/S3/S+ on noisy call
+    /// audio: "2 people" pins the other person to a single color, no guessing.
+    /// "Auto" keeps the adaptive behavior for when the count is unknown.
+    private func speakerCountPicker(theme: ResolvedTheme) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("How many people?")
+                .font(AppFont.detail)
+                .foregroundStyle(theme.secondaryText)
+            PillPicker(
+                selection: $state.expectedSpeakerCount,
+                options: [(0, "Auto"), (2, "2"), (3, "3"), (4, "4"), (5, "5+")],
+                theme: theme
+            )
+            Text(state.expectedSpeakerCount == 0
+                ? "I'll figure out how many voices there are. Best if you're not sure."
+                : "I'll expect \(state.expectedSpeakerCount) and keep each voice steady. Pick the exact number for the cleanest result.")
+                .font(AppFont.footnote)
+                .foregroundStyle(theme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

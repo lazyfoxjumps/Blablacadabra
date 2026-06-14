@@ -130,7 +130,13 @@ final class AppState: ObservableObject {
     /// lanes so speaker numbering is global (S1 means one person whether they're
     /// on the system lane or the mic lane). Kept across restarts/pause so numbers
     /// don't churn when the user flips a pill; `reset()` only on a full stop.
-    private var speakerIdentifier: SpeakerIdentifier?
+    /// Per-lane voice labelers. Single-source mode keeps one entry (`.single`)
+    /// clustering from Speaker 1. "Both" mode pins the mic lane to Speaker 1 (the
+    /// user, recreated inline since it's stateless) and stores a `.system`
+    /// clusterer that numbers the OTHER voices from Speaker 2 up. Kept across
+    /// restart/pause so numbering stays stable; cluster state cleared on a full
+    /// stop so the next session renumbers from the top.
+    private var speakerIdentifiers: [CaptionOrigin: SpeakerIdentifier] = [:]
     /// Which speakers have actually been heard this session. Chips and colors
     /// stay off until a SECOND voice appears (so a one-person session looks
     /// exactly as it did before the feature existed).
@@ -300,6 +306,20 @@ final class AppState: ObservableObject {
             restartIfRunning()
         }
     }
+    /// How many people the user expects on the call, or 0 for "Auto" (let the
+    /// clusterer figure it out, today's behavior). A known count is the real fix
+    /// for the over-clustering bug: when it implies exactly one voice on a lane
+    /// (e.g. "2 people" in Both = you + one other), that lane stops thresholding
+    /// and pins everyone to a single speaker, so one voice can never fragment
+    /// into S2/S3/S+ on noisy call audio. Changing it rebuilds the labelers, so
+    /// numbering restarts cleanly.
+    @Published var expectedSpeakerCount: Int {
+        didSet {
+            defaults.set(expectedSpeakerCount, forKey: "expectedSpeakerCount")
+            speakerIdentifiers.removeAll() // rebuild with the new per-lane caps
+            restartIfRunning()
+        }
+    }
     @Published var hideOnSilence: Bool {
         didSet { defaults.set(hideOnSilence, forKey: "hideOnSilence") }
     }
@@ -375,6 +395,7 @@ final class AppState: ObservableObject {
         // `self.sourceChoice` until every stored property is initialized).
         let storedSource = CaptureSourceChoice(rawValue: defaults.string(forKey: "sourceChoice") ?? "") ?? .system
         colorBySpeaker = (defaults.object(forKey: "colorBySpeaker") as? Bool) ?? (storedSource != .mic)
+        expectedSpeakerCount = defaults.object(forKey: "expectedSpeakerCount") as? Int ?? 0 // 0 = Auto
         hideOnSilence = defaults.bool(forKey: "hideOnSilence")
         clickThrough = defaults.bool(forKey: "clickThrough")
         captionPresetID = defaults.string(forKey: "captionPresetID") ?? "theme"
@@ -559,7 +580,7 @@ final class AppState: ObservableObject {
                                 locale: locale,
                                 showOriginal: self.showOriginal,
                                 inputGain: Float(self.inputGain),
-                                speakerIdentifier: self.activeSpeakerIdentifier(),
+                                speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin),
                                 installProgress: installProgress
                             )
                         } else {
@@ -568,7 +589,7 @@ final class AppState: ObservableObject {
                                 source: config.source,
                                 locale: locale,
                                 inputGain: Float(self.inputGain),
-                                speakerIdentifier: self.activeSpeakerIdentifier(),
+                                speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin),
                                 installProgress: installProgress
                             )
                         }
@@ -600,7 +621,7 @@ final class AppState: ObservableObject {
                             spokenLanguage: self.spokenLanguageCode,
                             showOriginal: self.showOriginal,
                             inputGain: Float(self.inputGain),
-                            speakerIdentifier: self.activeSpeakerIdentifier()
+                            speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin)
                         )
                     }
                     // Drive the live input level meter off the (gain-applied)
@@ -683,15 +704,54 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// The shared per-session voice labeler, created on first use (so a session
-    /// that never turns on speaker colors pays nothing). Returns nil when the
-    /// feature is off; one instance feeds every lane so numbering is global.
-    private func activeSpeakerIdentifier() -> SpeakerIdentifier? {
+    /// The voice labeler for a lane, created on first use (so a session that
+    /// never turns on speaker colors pays nothing). Returns nil when the feature
+    /// is off.
+    ///
+    /// - `.mic` (only ever the mic lane of a "Both" session) is pinned to
+    ///   Speaker 1: it's the user, so there's nothing to cluster. This keeps the
+    ///   user's own voice out of the system lane's (noisier) clustering job and
+    ///   guarantees "you" one stable color.
+    /// - `.system` (Both) clusters the remaining voices starting at Speaker 2,
+    ///   so your S1 and the call's first voice never collide.
+    /// - `.single` clusters everyone from Speaker 1 (no separate mic lane to be
+    ///   sure who "you" is).
+    private func activeSpeakerIdentifier(for origin: CaptionOrigin) -> SpeakerIdentifying? {
         guard colorBySpeaker else { return nil }
-        if let existing = speakerIdentifier { return existing }
-        let created = SpeakerIdentifier()
-        speakerIdentifier = created
+        if origin == .mic { return PinnedSpeakerIdentifier(.speaker(1)) }
+        if let existing = speakerIdentifiers[origin] { return existing }
+        let isSystemLane = origin == .system
+        let created = SpeakerIdentifier(
+            maxSpeakers: laneSpeakerSlots(isSystemLane: isSystemLane),
+            firstSpeakerNumber: isSystemLane ? 2 : 1, // leave S1 for the user (the mic)
+            diagnostics: diarizationDiagnostics(label: isSystemLane ? "system" : "single")
+        )
+        speakerIdentifiers[origin] = created
         return created
+    }
+
+    /// How many distinct speakers a lane's clusterer may hold, from the user's
+    /// expected count. The `.system` lane of "Both" mode excludes the user (they
+    /// own the pinned mic S1), so it holds `count - 1`; a single-source lane
+    /// holds the whole count. `slots == 1` makes the clusterer collapse to one
+    /// no-threshold speaker — the bulletproof path for the common 2-person call.
+    /// Auto (count 0) keeps the prior defaults.
+    private func laneSpeakerSlots(isSystemLane: Bool) -> Int {
+        guard expectedSpeakerCount > 0 else { return isSystemLane ? 3 : 4 } // Auto
+        let others = isSystemLane ? expectedSpeakerCount - 1 : expectedSpeakerCount
+        return min(6, max(1, others)) // cap at the palette's distinct-color budget
+    }
+
+    /// The opt-in diarization diagnostics sink, or nil when the hidden
+    /// `diagnosticsDiarizationLog` default is off. Lets a live call record the
+    /// real per-utterance similarity spread (to tune the merge threshold off
+    /// actual call audio, not the clean spike). Writes to
+    /// `~/Library/Logs/Blablacadabra/diarization.log` (numbers only, no text).
+    private func diarizationDiagnostics(label: String) -> DiarizationDiagnostics? {
+        guard UserDefaults.standard.bool(forKey: "diagnosticsDiarizationLog") else { return nil }
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/Blablacadabra/diarization.log")
+        return DiarizationDiagnostics(url: url, label: label)
     }
 
     /// A prepared engine for a lane, reused while the model is unchanged. Each
@@ -721,7 +781,7 @@ final class AppState: ObservableObject {
         // A full stop ends the session: clear the voice clusters so the next
         // start renumbers from Speaker 1 (restart/pause keep them, on purpose).
         speakersSeen = []
-        if let identifier = speakerIdentifier {
+        for identifier in speakerIdentifiers.values {
             Task { await identifier.reset() }
         }
     }

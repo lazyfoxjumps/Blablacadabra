@@ -17,9 +17,26 @@ import Foundation
 /// Embeddings are L2-normalized on the way in, so cosine similarity is just a
 /// dot product and centroids stay on the unit sphere.
 public struct SpeakerClusterer: Sendable {
+    /// What `assignDetailed` reports: the label it chose plus the diagnostics
+    /// behind that choice. `bestSimilarity` is the cosine to the nearest existing
+    /// cluster (-1 when there were none yet); `createdNewCluster` is true when the
+    /// utterance opened a fresh speaker. The actor logs these so a live call tells
+    /// us the REAL same-voice/different-voice similarity spread on call audio
+    /// (codec + noise), instead of us tuning `threshold` off the clean spike.
+    public struct Assignment: Sendable, Equatable {
+        public let id: SpeakerID
+        public let bestSimilarity: Float
+        public let createdNewCluster: Bool
+    }
+
     /// How many distinct speakers get their own number before the rest collapse
     /// into `.other`.
     public let maxSpeakers: Int
+    /// The number the FIRST cluster gets (1-based). Normally 1. In "Both" mode the
+    /// mic lane is pinned to Speaker 1 (it's the user, by definition), so the
+    /// system lane's clusterer starts at 2 — your own voice and the call's first
+    /// voice never fight over S1.
+    public let firstSpeakerNumber: Int
     /// Minimum cosine similarity to fold a new utterance into an existing
     /// cluster. Higher = stricter (more clusters); lower = more merging. The
     /// Step 1 spike measured same-voice similarity ~0.569 and different-voice
@@ -38,9 +55,10 @@ public struct SpeakerClusterer: Sendable {
     /// centroid update.
     private var counts: [Int] = []
 
-    public init(maxSpeakers: Int = 4, threshold: Float = 0.5) {
+    public init(maxSpeakers: Int = 4, threshold: Float = 0.5, firstSpeakerNumber: Int = 1) {
         self.maxSpeakers = max(1, maxSpeakers)
         self.threshold = threshold
+        self.firstSpeakerNumber = max(1, firstSpeakerNumber)
     }
 
     /// Number of distinct speakers seen so far (excludes `.other`).
@@ -48,8 +66,38 @@ public struct SpeakerClusterer: Sendable {
 
     /// Assigns an embedding to a speaker, mutating the clusters in place.
     public mutating func assign(_ embedding: [Float]) -> SpeakerID {
+        assignDetailed(embedding).id
+    }
+
+    /// Same as `assign` but also reports the nearest-cluster similarity and
+    /// whether a new cluster was opened, so the caller can log the decision.
+    public mutating func assignDetailed(_ embedding: [Float]) -> Assignment {
         let e = Self.l2(embedding)
-        guard !e.isEmpty else { return .other }
+        guard !e.isEmpty else { return Assignment(id: .other, bestSimilarity: -1, createdNewCluster: false) }
+
+        // Declared single speaker for this lane (the user said how many people
+        // are talking and there's exactly one here): collapse everything into one
+        // cluster with NO similarity gate. Real call audio scatters one voice's
+        // self-similarity ~0.35–0.86 — far too wide for any global threshold — so
+        // when we KNOW there's one speaker we stop guessing and pin every
+        // utterance to it. The centroid still drifts so it stays current.
+        if maxSpeakers == 1 {
+            let created = centroids.isEmpty
+            let sim: Float
+            if created {
+                centroids.append(e)
+                counts.append(1)
+                sim = -1
+            } else {
+                sim = Self.cosine(e, centroids[0])
+                counts[0] += 1
+                let n = Float(counts[0])
+                var merged = centroids[0]
+                for k in 0..<merged.count { merged[k] += (e[k] - merged[k]) / n }
+                centroids[0] = Self.l2(merged)
+            }
+            return Assignment(id: .speaker(firstSpeakerNumber), bestSimilarity: sim, createdNewCluster: created)
+        }
 
         // Nearest existing cluster.
         var bestIndex = -1
@@ -61,6 +109,7 @@ public struct SpeakerClusterer: Sendable {
                 bestIndex = i
             }
         }
+        let reportedSim = centroids.isEmpty ? Float(-1) : bestSim
 
         if bestIndex >= 0, bestSim >= threshold {
             counts[bestIndex] += 1
@@ -70,14 +119,16 @@ public struct SpeakerClusterer: Sendable {
                 merged[k] += (e[k] - merged[k]) / n // running mean toward the new sample
             }
             centroids[bestIndex] = Self.l2(merged)
-            return .speaker(bestIndex + 1)
+            return Assignment(id: .speaker(firstSpeakerNumber + bestIndex), bestSimilarity: reportedSim, createdNewCluster: false)
         }
 
         // New voice: take the next number if there's room, else overflow.
-        guard centroids.count < maxSpeakers else { return .other }
+        guard centroids.count < maxSpeakers else {
+            return Assignment(id: .other, bestSimilarity: reportedSim, createdNewCluster: false)
+        }
         centroids.append(e)
         counts.append(1)
-        return .speaker(centroids.count)
+        return Assignment(id: .speaker(firstSpeakerNumber + centroids.count - 1), bestSimilarity: reportedSim, createdNewCluster: true)
     }
 
     /// Forgets every cluster. Called between sessions so speaker numbers always

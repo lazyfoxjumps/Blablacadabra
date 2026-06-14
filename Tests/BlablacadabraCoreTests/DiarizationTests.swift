@@ -90,6 +90,88 @@ import Testing
         #expect(c.assign(b) == .speaker(2)) // < 0.5 -> new voice
         #expect(c.speakerCount == 2)
     }
+
+    /// "Both" mode pins the mic to Speaker 1 and clusters the system lane from
+    /// Speaker 2 up, so the call's voices never collide with the user's own S1.
+    @Test func offsetNumberingStartsAtFirstSpeakerNumber() {
+        var c = SpeakerClusterer(maxSpeakers: 3, threshold: 0.65, firstSpeakerNumber: 2)
+        #expect(c.assign(axis(0)) == .speaker(2)) // first voice -> S2, not S1
+        #expect(c.assign(axis(1)) == .speaker(3))
+        #expect(c.assign(axis(2)) == .speaker(4))
+        #expect(c.assign(axis(3)) == .other)      // cap (3) full
+        #expect(c.assign(axis(0)) == .speaker(2)) // known voice still resolves
+    }
+
+    /// "2 people" collapses the other lane to a single no-threshold speaker:
+    /// even wildly dissimilar embeddings (orthogonal here, sim 0) all land on the
+    /// same number, so one real voice can never fragment into S3/S4/S+ on noisy
+    /// call audio. This is the bulletproof path for the common 2-person call.
+    @Test func singleSpeakerLaneNeverFragments() {
+        var c = SpeakerClusterer(maxSpeakers: 1, threshold: 0.5, firstSpeakerNumber: 2)
+        #expect(c.assign(axis(0)) == .speaker(2))
+        #expect(c.assign(axis(1)) == .speaker(2)) // orthogonal (sim 0) but still S2
+        #expect(c.assign(axis(2)) == .speaker(2)) // never overflows to .other
+        #expect(c.assign(axis(0)) == .speaker(2))
+        #expect(c.speakerCount == 1)
+    }
+
+    @Test func singleSpeakerLaneRespectsFirstNumber() {
+        var c = SpeakerClusterer(maxSpeakers: 1) // firstSpeakerNumber defaults to 1
+        #expect(c.assign(axis(0)) == .speaker(1))
+        #expect(c.assign(axis(3)) == .speaker(1))
+        #expect(c.speakerCount == 1)
+    }
+
+    /// `assignDetailed` surfaces the nearest-cluster similarity and whether a new
+    /// cluster was opened, which the diagnostics log records per utterance.
+    @Test func assignDetailedReportsSimilarityAndNovelty() {
+        var c = SpeakerClusterer(maxSpeakers: 4, threshold: 0.65)
+        let first = c.assignDetailed(axis(0))
+        #expect(first.id == .speaker(1))
+        #expect(first.createdNewCluster)
+        #expect(first.bestSimilarity == -1) // no prior cluster to compare against
+        let second = c.assignDetailed(axis(0)) // identical -> cosine 1
+        #expect(second.id == .speaker(1))
+        #expect(!second.createdNewCluster)
+        #expect(second.bestSimilarity > 0.99)
+    }
+}
+
+@Suite struct SpeakerIdentifierGateTests {
+    /// The junk-gate runs BEFORE the model loads, so these assertions need no
+    /// network/model: a too-short span yields nil instead of minting a phantom
+    /// speaker from a noisy embedding.
+    @Test func tooShortUtteranceIsSkipped() async {
+        let id = SpeakerIdentifier(minUtteranceSamples: 12000)
+        let label = await id.identify(samples: [Float](repeating: 0.2, count: 100))
+        #expect(label == nil)
+    }
+
+    /// A long-enough but effectively silent span (RMS under the floor) is also
+    /// skipped rather than clustered as a speaker.
+    @Test func tooQuietUtteranceIsSkipped() async {
+        let id = SpeakerIdentifier(minUtteranceSamples: 12000, minUtteranceRMS: 0.005)
+        let label = await id.identify(samples: [Float](repeating: 0.0001, count: 16000))
+        #expect(label == nil)
+    }
+
+    @Test func rmsOfSilenceIsZero() {
+        #expect(SpeakerIdentifier.rms([]) == 0)
+        #expect(SpeakerIdentifier.rms([0, 0, 0, 0]) == 0)
+        #expect(abs(SpeakerIdentifier.rms([0.5, -0.5, 0.5, -0.5]) - 0.5) < 0.0001)
+    }
+}
+
+@Suite struct PinnedSpeakerIdentifierTests {
+    /// The mic lane pins to its fixed label no matter what audio comes in, and
+    /// never needs the model.
+    @Test func alwaysReturnsPinnedLabel() async {
+        let id = PinnedSpeakerIdentifier(.speaker(1))
+        #expect(await id.identify(samples: []) == .speaker(1))
+        #expect(await id.identify(samples: [Float](repeating: 0.3, count: 32000)) == .speaker(1))
+        await id.reset()
+        #expect(await id.identify(samples: [0.1, 0.2]) == .speaker(1)) // reset is a no-op
+    }
 }
 
 @Suite struct CaptionEventSpeakerTests {
