@@ -90,7 +90,13 @@ public actor TranscriptionPipeline: CaptionPipeline {
     /// the tap. 1.0 = unchanged; >1 boosts soft voices so the VAD catches them
     /// and the meter shows them. Hard-clamped to [-1, 1] after scaling so a
     /// heavy boost distorts gently instead of wrapping. Settable mid-stream.
+    /// Ignored while `autoGain` is on.
     private var inputGain: Float
+
+    /// Hands-off auto-gain. When on, the pump drives the gain from the measured
+    /// level via `autoGainController` and ignores the manual `inputGain`.
+    private var autoGain: Bool = false
+    private var autoGainController = AutoGainController()
 
     private var continuation: AsyncStream<CaptionEvent>.Continuation?
     private var pumpTask: Task<Void, Never>?
@@ -144,9 +150,17 @@ public actor TranscriptionPipeline: CaptionPipeline {
         audioTap = tap
     }
 
-    /// Live input gain (1.0 = unchanged). Applies from the next buffer.
+    /// Live input gain (1.0 = unchanged). Applies from the next buffer. Ignored
+    /// while auto-gain is on.
     public func setInputGain(_ gain: Float) {
         inputGain = max(0.1, gain)
+    }
+
+    /// Live auto-gain toggle. Re-arms the controller each time it's turned on so
+    /// it starts from unity rather than a stale gain from a previous session.
+    public func setAutoGain(_ enabled: Bool) {
+        if enabled, !autoGain { autoGainController = AutoGainController() }
+        autoGain = enabled
     }
 
     /// Starts capture, loads the engine, and returns the caption stream.
@@ -170,7 +184,18 @@ public actor TranscriptionPipeline: CaptionPipeline {
             for await buffer in audio {
                 guard !Task.isCancelled else { break }
                 var samples = Self.floatSamples(of: buffer)
-                let gain = inputGain
+                let gain: Float
+                if autoGain {
+                    // AGC drives the gain from the measured pre-gain level; it
+                    // only adapts up on speech, so silence is never boosted into
+                    // the VAD. Manual `inputGain` is ignored while it's on.
+                    var sum: Float = 0
+                    for sample in samples { sum += sample * sample }
+                    let rms = samples.isEmpty ? 0 : (sum / Float(samples.count)).squareRoot()
+                    gain = autoGainController.update(rms: rms)
+                } else {
+                    gain = inputGain
+                }
                 if gain != 1 {
                     samples = samples.map { max(-1, min(1, $0 * gain)) }
                 }

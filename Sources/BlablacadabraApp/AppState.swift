@@ -159,6 +159,22 @@ final class AppState: ObservableObject {
     /// don't redraw the overlay/panel.
     let levelMonitor = AudioLevelMonitor()
 
+    /// True when the mic input has been quiet for several seconds while
+    /// listening: a gentle hint that the input volume is likely too low (the
+    /// most common cause). Surfaced in Settings with a one-click jump to the
+    /// Sound input pane. Suppressed when auto-gain is on (AGC handles quiet
+    /// input itself, so nagging would be redundant).
+    @Published private(set) var inputQuietNudge = false
+    /// When the running mic level first dropped below the quiet threshold; nil
+    /// while the level is healthy. Drives the nudge's sustained-quiet timer.
+    private var quietInputSince: Date?
+    /// Below this RMS counts as "too quiet"; at or above the clear threshold
+    /// counts as healthy speech and resets the timer/nudge.
+    private static let quietInputRMS: Float = 0.02
+    private static let healthyInputRMS: Float = 0.05
+    /// How long the input must stay quiet before the nudge appears.
+    private static let quietInputGrace: TimeInterval = 6
+
     private var inputDeviceObserver: DefaultDeviceObserver?
     private var outputDeviceObserver: DefaultDeviceObserver?
     private var noticeClearTask: Task<Void, Never>?
@@ -254,6 +270,15 @@ final class AppState: ObservableObject {
         didSet {
             defaults.set(inputGain, forKey: "inputGain")
             eachPipeline { [gain = Float(inputGain)] in await $0.setInputGain(gain) }
+        }
+    }
+    /// Hands-off auto-gain (AGC). When on, the pipeline normalizes the input
+    /// level itself and the manual `inputGain` slider is bypassed. Applies live;
+    /// no restart.
+    @Published var autoGain: Bool {
+        didSet {
+            defaults.set(autoGain, forKey: "autoGain")
+            eachPipeline { [on = autoGain] in await $0.setAutoGain(on) }
         }
     }
     /// Display English variant. Whisper has no regional switch, so this is a
@@ -379,6 +404,7 @@ final class AppState: ObservableObject {
         model = WhisperKitEngine.migratedModel(fromStored: defaults.string(forKey: "model"))
         micDeviceUID = defaults.string(forKey: "micDevice")
         inputGain = defaults.object(forKey: "inputGain") as? Double ?? 1.0
+        autoGain = defaults.bool(forKey: "autoGain")
         let storedLocale = EnglishLocale(rawValue: defaults.string(forKey: "captionLocale") ?? "") ?? .us
         captionLocale = storedLocale
         normalizer = SpellingNormalizer(locale: storedLocale)
@@ -673,17 +699,27 @@ final class AppState: ObservableObject {
                             speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin)
                         )
                     }
+                    // Match the pipeline to the current auto-gain setting before
+                    // it starts, so AGC is live from the first buffer (the init
+                    // gain is the manual value; this flips it to hands-off).
+                    await pipeline.setAutoGain(self.autoGain)
                     // Drive the live input level meter off the (gain-applied)
                     // audio tap. The monitor is its own object so this doesn't
                     // churn the overlay/panel. Both lanes feed it; the meter's
                     // peak-decay naturally shows whichever is louder.
                     let monitor = self.levelMonitor
-                    await pipeline.setAudioTap { samples in
+                    // Only the mic lane feeds the low-input nudge: a loud system
+                    // lane must not mask a quiet mic in Both mode.
+                    let feedsNudge = config.origin != .system
+                    await pipeline.setAudioTap { [weak self] samples in
                         guard !samples.isEmpty else { return }
                         var sum: Float = 0
                         for sample in samples { sum += sample * sample }
                         let rms = (sum / Float(samples.count)).squareRoot()
-                        Task { @MainActor in monitor.report(rms: rms) }
+                        Task { @MainActor in
+                            monitor.report(rms: rms)
+                            if feedsNudge { self?.noteInputRMS(rms) }
+                        }
                     }
                     // Sequential start: lane 0 fully prepares (download + load)
                     // before lane 1, so a first-run download happens once.
@@ -865,6 +901,7 @@ final class AppState: ObservableObject {
         phase = newPhase
         partialOrigin = .single
         levelMonitor.reset()
+        clearInputQuietNudge()
         // Track the teardown so the next session can await it (no overlap).
         teardownTask = Task { for pipeline in ending { await pipeline.stop() } }
     }
@@ -905,6 +942,38 @@ final class AppState: ObservableObject {
         guard micDeviceUID == nil, sourceChoice != .system,
               let name = AudioDevices.defaultInputDevice()?.name else { return }
         showAudioDeviceNotice("Switched to \(name)")
+    }
+
+    /// Fed each buffer's (gain-applied) RMS from the audio tap. Raises a gentle
+    /// nudge when the mic input stays quiet for `quietInputGrace` while
+    /// listening, so a too-low input volume doesn't read as "the app is broken."
+    /// Mic-only concern: skipped for system-audio captures and while AGC is on.
+    func noteInputRMS(_ rms: Float) {
+        guard phase == .listening, sourceChoice != .system, !autoGain else {
+            if inputQuietNudge { inputQuietNudge = false }
+            quietInputSince = nil
+            return
+        }
+        if rms >= Self.healthyInputRMS {
+            // Clearly hearing the user: all good, reset.
+            quietInputSince = nil
+            if inputQuietNudge { inputQuietNudge = false }
+        } else if rms < Self.quietInputRMS {
+            let now = Date()
+            if let since = quietInputSince {
+                if !inputQuietNudge, now.timeIntervalSince(since) >= Self.quietInputGrace {
+                    inputQuietNudge = true
+                }
+            } else {
+                quietInputSince = now
+            }
+        }
+        // Between the two thresholds: hold current state (hysteresis).
+    }
+
+    private func clearInputQuietNudge() {
+        quietInputSince = nil
+        if inputQuietNudge { inputQuietNudge = false }
     }
 
     private func showAudioDeviceNotice(_ text: String) {

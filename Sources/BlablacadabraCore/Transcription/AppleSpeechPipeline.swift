@@ -107,7 +107,13 @@ public actor AppleSpeechPipeline: CaptionPipeline {
 
     /// Linear input gain applied to every sample before the analyzer and the tap.
     /// 1.0 = unchanged; clamped to [-1, 1] after scaling. Settable mid-stream.
+    /// Ignored while `autoGain` is on.
     private var inputGain: Float
+
+    /// Hands-off auto-gain. When on, `feed` drives the gain from the measured
+    /// level via `autoGainController` and ignores the manual `inputGain`.
+    private var autoGain: Bool = false
+    private var autoGainController = AutoGainController()
 
     /// Optional tap on incoming pipeline-format samples; feeds the level meter
     /// without touching the caption stream.
@@ -258,6 +264,11 @@ public actor AppleSpeechPipeline: CaptionPipeline {
         inputGain = max(0.1, gain)
     }
 
+    public func setAutoGain(_ enabled: Bool) {
+        if enabled, !autoGain { autoGainController = AutoGainController() }
+        autoGain = enabled
+    }
+
     public func setAudioTap(_ tap: (@Sendable ([Float]) -> Void)?) {
         audioTap = tap
     }
@@ -271,7 +282,17 @@ public actor AppleSpeechPipeline: CaptionPipeline {
         let frames = Int(buffer.frameLength)
         guard frames > 0, let channel = buffer.floatChannelData else { return }
 
-        let gain = inputGain
+        let gain: Float
+        if autoGain {
+            // AGC drives the gain from the measured pre-gain level; adapts up
+            // only on speech, so silence is never boosted. Manual gain ignored.
+            var sum: Float = 0
+            for i in 0..<frames { sum += channel[0][i] * channel[0][i] }
+            let rms = (sum / Float(frames)).squareRoot()
+            gain = autoGainController.update(rms: rms)
+        } else {
+            gain = inputGain
+        }
         if gain != 1 {
             for i in 0..<frames {
                 channel[0][i] = max(-1, min(1, channel[0][i] * gain))

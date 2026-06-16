@@ -118,6 +118,12 @@ public actor TranslatingPipeline: CaptionPipeline {
         Task { await inner.setInputGain(gain) }
     }
 
+    /// Forwarded to the inner transcription pipeline (which owns the real gain
+    /// path). Fire-and-forget for the same reason as `setInputGain`.
+    public func setAutoGain(_ enabled: Bool) {
+        Task { await inner.setAutoGain(enabled) }
+    }
+
     /// Forwarded to the inner pipeline (which owns the real audio path feeding the
     /// level meter). Fire-and-forget for the same reason as `setInputGain`.
     public func setAudioTap(_ tap: (@Sendable ([Float]) -> Void)?) {

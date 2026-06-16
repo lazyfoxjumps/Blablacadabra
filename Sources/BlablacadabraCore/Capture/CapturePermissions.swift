@@ -72,4 +72,12 @@ public enum CapturePermissions {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
         NSWorkspace.shared.open(url)
     }
+
+    /// Opens System Settings to Sound, where the per-device Input volume lives.
+    /// Used by the low-input nudge: a quiet mic is most often just a low input
+    /// volume here, not anything the app can fix from its own side.
+    public static func openSoundInputSettings() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension")!
+        NSWorkspace.shared.open(url)
+    }
 }

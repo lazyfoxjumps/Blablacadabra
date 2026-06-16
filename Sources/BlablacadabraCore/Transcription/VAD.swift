@@ -5,9 +5,34 @@ import Foundation
 public struct VADConfiguration: Sendable {
     /// Analysis frame length. RMS energy is measured per frame.
     public var frameDuration: Double = 0.03
-    /// RMS at or above this counts as speech. System audio at normal volume
-    /// lands well above; raise if music/noise triggers false utterances.
+    /// Absolute floor for the speech gate: the gate never drops below this, so a
+    /// truly silent (digital-zero) source can't let numerical hiss register as
+    /// speech. In a quiet room this dominates; once the background gets louder
+    /// (a boosted mic, an amplified input) the adaptive noise floor takes over.
+    /// See `noiseGateMargin`.
     public var energyThreshold: Float = 0.012
+    /// Speech must exceed the tracked background-noise floor by this factor to
+    /// count as speech. This is what stops a loud-but-steady hiss (e.g. after the
+    /// input volume or boost is cranked up) from crossing `energyThreshold` and
+    /// getting captioned as phantom speech. ~3× ≈ 9.5 dB above the floor; real
+    /// speech sits far higher.
+    public var noiseGateMargin: Float = 3.0
+    /// Seconds for the noise-floor estimate to climb toward a louder steady
+    /// background (the EMA rise time). The estimate snaps DOWN instantly to a
+    /// quieter level; it only climbs slowly, so a brief loud moment doesn't
+    /// inflate it. Tuned so a freshly-boosted hiss is learned (and the gate
+    /// closes on it) faster than `minSpeechDuration`, so steady noise never even
+    /// accumulates a min-length utterance — not one phantom caption, not a burst.
+    public var noiseFloorRiseTime: Double = 0.5
+    /// Hard ceiling on the noise-floor estimate, so the gate can reject a loud
+    /// hiss yet never climb up into real speech and start dropping it. Chosen so
+    /// `maxNoiseFloor * noiseGateMargin` (≈0.15) stays comfortably below normal
+    /// speech RMS (~0.1-0.3) while sitting above typical broadband hiss.
+    public var maxNoiseFloor: Float = 0.05
+    /// Consecutive above-threshold frames required to OPEN an utterance. Keeps a
+    /// lone click, notification ping, or single noisy frame from starting a
+    /// phantom utterance. 1 = open on the first speech frame (old behavior).
+    public var onsetSpeechFrames: Int = 2
     /// This much continuous silence after speech finalizes the utterance.
     public var silenceToFinalize: Double = 0.6
     /// Force-finalize an utterance that runs longer than this (keeps latency
@@ -29,6 +54,53 @@ public struct VADConfiguration: Sendable {
     public var forcedCutSearchWindow: Double = 2.0
 
     public init() {}
+}
+
+/// Tracks the steady background-noise RMS of a stream so callers can gate on
+/// "speech is X above the floor" instead of a fixed absolute threshold (which
+/// breaks the moment input gain pushes the noise floor up past it).
+///
+/// It's an asymmetric EMA: it snaps DOWN instantly when the room gets quieter,
+/// and climbs UP only slowly (over `riseTime`) toward a louder steady
+/// background. A hard `maxFloor` ceiling means it can rise enough to reject a
+/// loud hiss but never climbs up into real-speech range and starts dropping
+/// speech. Quiet dips between syllables keep it pinned near the true floor
+/// during talking, so the estimate reflects the room, not the talker. Pure +
+/// synchronous, so both the VAD and the auto-gain can reuse and unit-test it.
+public struct NoiseFloorFollower: Sendable {
+    /// Current background-noise RMS estimate.
+    public private(set) var floor: Float
+    private let riseCoef: Float
+    private let maxFloor: Float
+
+    /// - frameDuration: seconds per fed sample (scales the rise rate).
+    /// - riseTime: seconds to climb (e-fold) toward a louder steady background.
+    /// - maxFloor: hard ceiling, keeping the gate below real speech.
+    /// - initialFloor: starting estimate (0 = learn from scratch; the absolute
+    ///   gate stays in charge until the room is observed).
+    public init(frameDuration: Double, riseTime: Double, maxFloor: Float, initialFloor: Float = 0) {
+        self.floor = max(0, initialFloor)
+        self.riseCoef = Float(min(1, frameDuration / max(frameDuration, riseTime)))
+        self.maxFloor = maxFloor
+    }
+
+    /// Feed one frame's RMS; returns the updated floor. Snap down to a quieter
+    /// level immediately; climb toward a louder one slowly; clamp to the ceiling.
+    @discardableResult
+    public mutating func update(_ rms: Float) -> Float {
+        if rms < floor {
+            floor = rms
+        } else {
+            floor += (rms - floor) * riseCoef
+        }
+        if floor > maxFloor { floor = maxFloor }
+        return floor
+    }
+
+    /// The speech-gate threshold: `floor * margin`, never below `absoluteMinimum`.
+    public func threshold(margin: Float, absoluteMinimum: Float) -> Float {
+        max(absoluteMinimum, floor * margin)
+    }
 }
 
 /// Energy-based voice-activity chunker. Feed it pipeline-format samples as
@@ -62,10 +134,21 @@ public struct VoiceChunker {
     private var trailingSilenceFrames = 0
     private var framesSinceLastPartial = 0
     private var speechFramesInUtterance = 0
+    /// Tracks the room's noise floor so the speech gate is relative to it, not a
+    /// fixed number that a boosted mic floods straight through.
+    private var noiseFloor: NoiseFloorFollower
+    /// Consecutive above-gate frames seen while NOT yet in an utterance; an
+    /// utterance opens only once this reaches `onsetSpeechFrames`.
+    private var onsetFrames = 0
 
     public init(config: VADConfiguration = VADConfiguration()) {
         self.config = config
         let rate = AudioPipelineFormat.sampleRate
+        noiseFloor = NoiseFloorFollower(
+            frameDuration: config.frameDuration,
+            riseTime: config.noiseFloorRiseTime,
+            maxFloor: config.maxNoiseFloor
+        )
         frameSize = max(1, Int(config.frameDuration * rate))
         preRollFrames = max(0, Int(config.preRollDuration / config.frameDuration))
         silenceFramesToFinalize = max(1, Int(config.silenceToFinalize / config.frameDuration))
@@ -98,22 +181,38 @@ public struct VoiceChunker {
     }
 
     private mutating func processFrame(_ frame: [Float]) -> Event? {
-        let isSpeech = rms(frame) >= config.energyThreshold
+        let energy = rms(frame)
+        noiseFloor.update(energy)
+        let threshold = noiseFloor.threshold(
+            margin: config.noiseGateMargin,
+            absoluteMinimum: config.energyThreshold
+        )
+        let isSpeech = energy >= threshold
 
         guard speaking else {
+            // Keep a rolling pre-roll of recent audio so the first syllables
+            // survive once we commit to an utterance.
+            preRoll.append(contentsOf: frame)
+            let maxPreRoll = preRollFrames * frameSize
+            if preRoll.count > maxPreRoll {
+                preRoll.removeFirst(preRoll.count - maxPreRoll)
+            }
             if isSpeech {
-                speaking = true
-                utterance = preRoll + frame
-                preRoll = []
-                trailingSilenceFrames = 0
-                framesSinceLastPartial = 0
-                speechFramesInUtterance = 1
-            } else {
-                preRoll.append(contentsOf: frame)
-                let maxPreRoll = preRollFrames * frameSize
-                if preRoll.count > maxPreRoll {
-                    preRoll.removeFirst(preRoll.count - maxPreRoll)
+                onsetFrames += 1
+                // Open only after a few consecutive speech frames, so a lone
+                // click/ping or single noisy frame can't start a phantom
+                // utterance. The pre-roll already holds these onset frames.
+                if onsetFrames >= max(1, config.onsetSpeechFrames) {
+                    speaking = true
+                    utterance = preRoll
+                    preRoll = []
+                    trailingSilenceFrames = 0
+                    framesSinceLastPartial = 0
+                    speechFramesInUtterance = onsetFrames
+                    onsetFrames = 0
                 }
+            } else {
+                onsetFrames = 0
             }
             return nil
         }
@@ -180,17 +279,23 @@ public struct VoiceChunker {
         let remainder = Array(utterance.suffix(from: min(cut, utterance.count)))
 
         // Stay in speaking state, seeded with the remainder; recount its
-        // speech/silence frames so finalize bookkeeping starts honest.
+        // speech/silence frames so finalize bookkeeping starts honest. Use the
+        // current adaptive threshold (a snapshot is fine: these frames were
+        // already fed through the follower on the way in).
         utterance = remainder
         speaking = true
         framesSinceLastPartial = 0
         speechFramesInUtterance = 0
         trailingSilenceFrames = 0
+        let remainderThreshold = noiseFloor.threshold(
+            margin: config.noiseGateMargin,
+            absoluteMinimum: config.energyThreshold
+        )
         let remainderFrames = remainder.count / frameSize
         for index in 0..<remainderFrames {
             let start = index * frameSize
             let frame = Array(remainder[start..<(start + frameSize)])
-            if rms(frame) >= config.energyThreshold {
+            if rms(frame) >= remainderThreshold {
                 speechFramesInUtterance += 1
                 trailingSilenceFrames = 0
             } else {
@@ -208,6 +313,7 @@ public struct VoiceChunker {
         trailingSilenceFrames = 0
         framesSinceLastPartial = 0
         speechFramesInUtterance = 0
+        onsetFrames = 0
     }
 
     private func rms(_ frame: [Float]) -> Float {

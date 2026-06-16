@@ -73,6 +73,7 @@ private actor ScriptedPipeline: CaptionPipeline {
     func setSpokenLanguage(_ code: String?) {}
     func setShowOriginal(_ show: Bool) {}
     func setInputGain(_ gain: Float) {}
+    func setAutoGain(_ enabled: Bool) {}
     func setAudioTap(_ tap: (@Sendable ([Float]) -> Void)?) {}
 
     var didStart: Bool { started }

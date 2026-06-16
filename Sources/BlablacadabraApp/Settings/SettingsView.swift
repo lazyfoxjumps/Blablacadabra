@@ -563,17 +563,51 @@ struct SettingsView: View {
                     .foregroundStyle(theme.accentText)
                 }
                 inputLevelRow(theme: theme)
+                if state.inputQuietNudge {
+                    lowInputNudgeRow(theme: theme)
+                }
+                Toggle(isOn: $state.autoGain) {
+                    behaviorLabel(
+                        "Auto-adjust input",
+                        detail: "I match the level for you, so soft voices come through without touching the boost. It only lifts when someone's actually talking, never the quiet.",
+                        theme: theme
+                    )
+                }
+                .toggleStyle(FlameToggleStyle())
                 VStack(alignment: .leading, spacing: 8) {
-                    labeledRow("Input boost", detail: gainLabel, theme: theme) {
+                    labeledRow("Input boost", detail: state.autoGain ? "Auto" : gainLabel, theme: theme) {
                         NDSlider(value: $state.inputGain, range: 1...3, step: 0.1, theme: theme)
+                            .disabled(state.autoGain)
+                            .opacity(state.autoGain ? 0.4 : 1)
                     }
-                    Text("Turn this up if soft voices are getting missed. Leave it at 1× for normal speech.")
+                    Text(state.autoGain
+                        ? "Auto-adjust is handling the level. Turn it off to set the boost yourself."
+                        : "Turn this up if soft voices are getting missed. Leave it at 1× for normal speech.")
                         .font(AppFont.footnote)
                         .foregroundStyle(theme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+    }
+
+    /// Shown when the mic has been quiet for a while: the usual cause is a low
+    /// input volume in System Settings, which the app can't change for you.
+    private func lowInputNudgeRow(theme: ResolvedTheme) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.bubble")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Your mic sounds quiet. Try the built-in mic, or turn its input volume up in System Settings.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open Sound settings") {
+                    CapturePermissions.openSoundInputSettings()
+                }
+                .buttonStyle(.plain)
+                .underline()
+            }
+        }
+        .font(AppFont.detail)
+        .foregroundStyle(theme.accentText)
     }
 
     private var gainLabel: String {

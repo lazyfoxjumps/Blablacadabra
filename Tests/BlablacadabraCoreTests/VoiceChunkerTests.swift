@@ -17,6 +17,14 @@ private func silence(seconds: Double) -> [Float] {
     [Float](repeating: 0, count: Int(seconds * Double(rate)))
 }
 
+/// Steady broadband-ish hiss at a chosen RMS (alternating-sign constant, so
+/// |sample| == RMS). Models a mic whose noise floor has been boosted up past the
+/// old fixed gate (0.012) by a cranked input volume.
+private func steadyNoise(seconds: Double, rms: Float) -> [Float] {
+    let count = Int(seconds * Double(rate))
+    return (0..<count).map { i in (i % 2 == 0 ? rms : -rms) }
+}
+
 @Suite struct VoiceChunkerTests {
     @Test func speechThenPauseFinalizes() {
         var chunker = VoiceChunker()
@@ -99,6 +107,47 @@ private func silence(seconds: Double) -> [Float] {
             let seconds = Double(tail.count) / Double(rate)
             #expect(seconds > 1.0)
         }
+    }
+
+    @Test func steadyBoostedNoiseEmitsNothing() {
+        // The reported bug: after raising input volume, a steady room hiss sits
+        // above the old fixed 0.012 gate and gets captioned as phantom speech.
+        // RMS 0.03 is ~8 dB over the absolute floor; the adaptive gate must learn
+        // it and stay shut. No finals, and nothing left open to flush.
+        var chunker = VoiceChunker()
+        let events = chunker.process(steadyNoise(seconds: 5.0, rms: 0.03))
+        let finals = events.filter { if case .final = $0 { return true } else { return false } }
+        #expect(finals.isEmpty)
+        #expect(chunker.flush() == nil)
+    }
+
+    @Test func speechSurvivesOverABoostedNoiseFloor() {
+        // Real speech (RMS ~0.2) over a 0.03 hiss bed must still finalize: the
+        // gate rejects the steady floor, not the voice riding well above it.
+        var chunker = VoiceChunker()
+        let bed = steadyNoise(seconds: 1.0, rms: 0.03)
+        let voice = zip(speech(seconds: 0.8), steadyNoise(seconds: 0.8, rms: 0.03))
+            .map { $0 + $1 }
+        var events = chunker.process(bed)         // let the floor learn the hiss
+        events += chunker.process(voice)
+        events += chunker.process(steadyNoise(seconds: 1.0, rms: 0.03))
+        let finals = events.filter { if case .final = $0 { return true } else { return false } }
+        #expect(finals.count == 1)
+    }
+
+    @Test func noiseFloorRejectsSteadyBackgroundButNotSpikes() {
+        var follower = NoiseFloorFollower(
+            frameDuration: 0.03, riseTime: 0.5, maxFloor: 0.05
+        )
+        // Learn a steady 0.03 hiss over ~1s of frames.
+        for _ in 0..<40 { follower.update(0.03) }
+        let thr = follower.threshold(margin: 3.0, absoluteMinimum: 0.012)
+        #expect(thr > 0.03)          // steady hiss is now below the gate
+        #expect(thr <= 0.15)         // ...but the ceiling keeps real speech safe
+        // A loud spike snaps nothing up unduly, and the floor drops instantly
+        // when the room goes quiet again.
+        follower.update(0.0)
+        #expect(follower.floor == 0)
     }
 
     @Test func flushFinalizesOpenUtterance() {

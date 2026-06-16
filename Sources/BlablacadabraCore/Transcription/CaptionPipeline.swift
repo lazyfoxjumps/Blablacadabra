@@ -95,8 +95,14 @@ public protocol CaptionPipeline: Actor, Sendable {
     /// Bilingual captions: show the source-language text above the translation.
     func setShowOriginal(_ show: Bool)
 
-    /// Linear input gain (1.0 = unchanged). Applies from the next buffer.
+    /// Linear input gain (1.0 = unchanged). Applies from the next buffer. When
+    /// auto-gain is on (`setAutoGain(true)`) this manual value is ignored.
     func setInputGain(_ gain: Float)
+
+    /// Hands-off auto-gain (AGC). When on, the pipeline measures the incoming
+    /// level and drives the gain itself, ignoring the manual `setInputGain`
+    /// value until it's turned back off. Applies from the next buffer.
+    func setAutoGain(_ enabled: Bool)
 
     /// Optional tap on incoming pipeline-format samples; feeds the level meter
     /// and debug dumps without touching the caption stream.
