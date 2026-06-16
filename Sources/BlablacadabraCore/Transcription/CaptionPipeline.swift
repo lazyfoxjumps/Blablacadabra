@@ -12,37 +12,45 @@ import Foundation
 /// handles language and task changes via an `AppState` restart instead); the
 /// protocol keeps the call sites uniform regardless.
 /// Which engine a caption session runs on. Apple's on-device frameworks are the
-/// preferred fast-path; WhisperKit is the universal fallback.
+/// preferred fast-path; WhisperKit is the universal transcriber.
 ///
 /// - `appleTranscribe`: `SpeechAnalyzer` streaming transcription, translate off.
-/// - `appleTranslate` (Round 2): `SpeechAnalyzer` transcription + Apple's
-///   `Translation` framework translating each line to English. Bilingual is then
-///   near-free (the original is already the transcriber's output, no second pass).
+/// - `whisperAppleTranslate`: WhisperKit transcribes the (locked) source language,
+///   then Apple's `Translation` framework text-translates each line to English.
+///   This replaced the old all-Apple translate path: Whisper is the reliable
+///   transcriber for non-English audio (Apple's speech assets only install for a
+///   narrow set), and decoupling transcription from translation fixes the garbage
+///   English that Whisper's own audio `.translate` task produced on dialectal /
+///   low-resource languages (Arabic especially). Bilingual is near-free: the
+///   source line is already the transcriber's output, no second decode.
 /// - `whisper`: WhisperKit, the universal fallback (~99 languages, audio
-///   auto-detect, older macOS).
+///   auto-detect, audio translate, older macOS).
 public enum CaptionEngineKind: Equatable, Sendable {
     case appleTranscribe
-    case appleTranslate
+    case whisperAppleTranslate
     case whisper
 
     /// Source languages (ISO 639-1) whose Apple `Translation` quality we judge
-    /// worse than WhisperKit's, so we keep them on Whisper for translation even
+    /// worse than WhisperKit's, so we keep them on Whisper's audio-translate even
     /// when Apple's pack is installed. `id` (Indonesian): Apple's on-device model
     /// leans Malay; Whisper's id->en reads truer. Transcribe-only (`appleTranscribe`)
     /// is unaffected — this only steers the translate path.
     public static let appleTranslateDenylist: Set<String> = ["id"]
 
-    /// Pure engine choice (no OS calls, so it's unit-testable). The shared gate
-    /// for any Apple path: the OS has the API, the locale is Apple-supported for
-    /// transcription, and Speech Recognition is authorized. Then:
-    /// - translate OFF -> `appleTranscribe`.
-    /// - translate ON -> `appleTranslate` ONLY when the source language is locked
-    ///   (Apple can't auto-detect from audio like Whisper, and it's also the
-    ///   translation source), the source->English pack is already installed (we
-    ///   never trigger a download here, to honor the no-nag rule), AND the source
-    ///   language is not on `appleTranslateDenylist`. Otherwise WhisperKit, which
-    ///   auto-detects and translates ~99 languages.
-    /// Any miss falls back to WhisperKit.
+    /// Pure engine choice (no OS calls, so it's unit-testable).
+    ///
+    /// - translate OFF: the Apple `SpeechAnalyzer` transcribe fast-path when the OS
+    ///   has the API, the locale is Apple-supported, and Speech is authorized;
+    ///   otherwise WhisperKit.
+    /// - translate ON: `whisperAppleTranslate` when the OS has the macOS 26
+    ///   `Translation` framework, the source language is LOCKED (Apple text-translate
+    ///   needs a known source, and a locked language is also Whisper's reliable
+    ///   transcribe mode), the source->English pack is already INSTALLED (we never
+    ///   trigger a download here, to honor the no-nag rule), and the source is not on
+    ///   `appleTranslateDenylist`. This path deliberately does NOT require Apple
+    ///   speech support or the Speech permission: WhisperKit does the transcription,
+    ///   so neither is relevant. Any miss falls back to WhisperKit's universal
+    ///   audio-translate.
     public static func select(
         translate: Bool,
         localeSupported: Bool,
@@ -52,11 +60,14 @@ public enum CaptionEngineKind: Equatable, Sendable {
         translationInstalled: Bool = false,
         sourceISOCode: String? = nil
     ) -> CaptionEngineKind {
-        guard osHasApple, authorized, localeSupported else { return .whisper }
-        guard translate else { return .appleTranscribe }
-        guard languageLocked, translationInstalled else { return .whisper }
-        if let iso = sourceISOCode, appleTranslateDenylist.contains(iso) { return .whisper }
-        return .appleTranslate
+        guard osHasApple else { return .whisper }
+        if translate {
+            guard languageLocked, translationInstalled else { return .whisper }
+            if let iso = sourceISOCode, appleTranslateDenylist.contains(iso) { return .whisper }
+            return .whisperAppleTranslate
+        }
+        guard authorized, localeSupported else { return .whisper }
+        return .appleTranscribe
     }
 }
 

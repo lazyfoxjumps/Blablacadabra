@@ -3,10 +3,10 @@ import Testing
 @testable import BlablacadabraCore
 
 /// The pure engine-selection truth table `AppState` relies on to pick between the
-/// Apple `SpeechAnalyzer` transcribe fast-path, the Apple transcription + Apple
-/// `Translation` path (Round 2), and the WhisperKit fallback. The live
-/// availability / install / authorization probes that feed it are integration-only
-/// (gotcha 21); this covers the deterministic decision once those booleans are known.
+/// Apple `SpeechAnalyzer` transcribe fast-path, the WhisperKit-transcribe +
+/// Apple-text-translate path, and the WhisperKit fallback. The live availability /
+/// install / authorization probes that feed it are integration-only (gotcha 21);
+/// this covers the deterministic decision once those booleans are known.
 @Suite struct AppleEngineSelectionTests {
     @Test func transcribeChosenWhenEverythingHolds() {
         // Not translating, OS has the API, locale supported, authorized -> Apple
@@ -22,8 +22,8 @@ import Testing
     }
 
     @Test func translateChosenWhenLockedAndInstalled() {
-        // Round 2: translate on + Apple-supported locale + authorized + a locked
-        // source language + an installed source->English pack -> Apple translate.
+        // Translate on + a locked source language + an installed source->English
+        // pack -> Whisper transcribes, Apple text-translates.
         #expect(
             CaptionEngineKind.select(
                 translate: true,
@@ -32,7 +32,24 @@ import Testing
                 osHasApple: true,
                 languageLocked: true,
                 translationInstalled: true
-            ) == .appleTranslate
+            ) == .whisperAppleTranslate
+        )
+    }
+
+    @Test func translateIgnoresAppleSpeechSupportAndAuth() {
+        // The translate path uses WhisperKit for transcription, so it needs neither
+        // Apple speech-locale support nor the Speech permission. Only the macOS 26
+        // Translation framework + a locked, installed, non-denylisted pair matter.
+        #expect(
+            CaptionEngineKind.select(
+                translate: true,
+                localeSupported: false, // no Apple speech support
+                authorized: false,      // Speech permission denied
+                osHasApple: true,
+                languageLocked: true,
+                translationInstalled: true,
+                sourceISOCode: "ar"
+            ) == .whisperAppleTranslate
         )
     }
 
@@ -65,7 +82,7 @@ import Testing
     }
 
     @Test func translateFallsBackForDenylistedSourceLanguage() {
-        // id is on the denylist (Apple leans Malay) -> Whisper translates it,
+        // id is on the denylist (Apple leans Malay) -> Whisper audio-translates it,
         // even with a locked + installed pair. Transcribe-only is unaffected.
         #expect(
             CaptionEngineKind.select(
@@ -78,7 +95,7 @@ import Testing
                 sourceISOCode: "id"
             ) == .whisper
         )
-        // A non-denylisted source still gets the Apple translate fast-path.
+        // A non-denylisted source still gets the Whisper-transcribe + Apple-translate path.
         #expect(
             CaptionEngineKind.select(
                 translate: true,
@@ -88,7 +105,7 @@ import Testing
                 languageLocked: true,
                 translationInstalled: true,
                 sourceISOCode: "ja"
-            ) == .appleTranslate
+            ) == .whisperAppleTranslate
         )
     }
 
@@ -103,9 +120,9 @@ import Testing
         )
     }
 
-    @Test func unauthorizedForcesWhisper() {
-        // A denied Speech permission falls back silently (both transcribe and
-        // translate need it, since both transcribe via Apple).
+    @Test func unauthorizedForcesWhisperOnlyForTranscribe() {
+        // Transcribe path: a denied Speech permission falls back silently (Apple
+        // transcription needs it).
         #expect(
             CaptionEngineKind.select(
                 translate: false,
@@ -114,6 +131,8 @@ import Testing
                 osHasApple: true
             ) == .whisper
         )
+        // Translate path: a denied Speech permission does NOT force Whisper, because
+        // WhisperKit (not SpeechAnalyzer) does the transcription here.
         #expect(
             CaptionEngineKind.select(
                 translate: true,
@@ -122,7 +141,7 @@ import Testing
                 osHasApple: true,
                 languageLocked: true,
                 translationInstalled: true
-            ) == .whisper
+            ) == .whisperAppleTranslate
         )
     }
 
@@ -141,11 +160,14 @@ import Testing
     }
 
     @Test func exhaustiveTruthTable() {
-        // Apple shared gate: osHasApple && authorized && localeSupported.
-        // Then translate off -> appleTranscribe; translate on -> appleTranslate
-        // iff (languageLocked && translationInstalled && source not denylisted),
-        // else whisper. "ja" stands in for any non-denylisted source, "id" for a
-        // denylisted one, nil for "unknown / don't care".
+        // Everything needs osHasApple (macOS 26). Then:
+        // - translate OFF -> appleTranscribe iff (authorized && localeSupported),
+        //   else whisper.
+        // - translate ON  -> whisperAppleTranslate iff (languageLocked &&
+        //   translationInstalled && source not denylisted), else whisper. The
+        //   translate path ignores authorized/localeSupported (Whisper transcribes).
+        // "ja" stands in for any non-denylisted source, "id" for a denylisted one,
+        // nil for "unknown / don't care".
         for translate in [false, true] {
             for localeSupported in [false, true] {
                 for authorized in [false, true] {
@@ -153,15 +175,14 @@ import Testing
                         for languageLocked in [false, true] {
                             for translationInstalled in [false, true] {
                                 for sourceISOCode in [nil, "ja", "id"] as [String?] {
-                                    let appleGate = osHasApple && authorized && localeSupported
                                     let denylisted = sourceISOCode.map(CaptionEngineKind.appleTranslateDenylist.contains) ?? false
                                     let expected: CaptionEngineKind
-                                    if !appleGate {
+                                    if !osHasApple {
                                         expected = .whisper
-                                    } else if !translate {
-                                        expected = .appleTranscribe
+                                    } else if translate {
+                                        expected = (languageLocked && translationInstalled && !denylisted) ? .whisperAppleTranslate : .whisper
                                     } else {
-                                        expected = (languageLocked && translationInstalled && !denylisted) ? .appleTranslate : .whisper
+                                        expected = (authorized && localeSupported) ? .appleTranscribe : .whisper
                                     }
                                     #expect(
                                         CaptionEngineKind.select(

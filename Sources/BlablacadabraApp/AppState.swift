@@ -96,9 +96,9 @@ final class AppState: ObservableObject {
     /// Live pipelines. One in single-source modes; two in "Both" (system + mic),
     /// each detecting and translating independently. Settings changes fan out to
     /// all of them. Each is a WhisperKit-backed `TranscriptionPipeline`, an Apple
-    /// `SpeechAnalyzer` `AppleSpeechPipeline` (transcribe-only), or an
-    /// `AppleTranslatingPipeline` (Apple transcription + Apple translation); all
-    /// conform to `CaptionPipeline` so AppState treats them identically.
+    /// `SpeechAnalyzer` `AppleSpeechPipeline` (transcribe-only), or a
+    /// `TranslatingPipeline` wrapping a Whisper transcriber + Apple text-translation;
+    /// all conform to `CaptionPipeline` so AppState treats them identically.
     private var pipelines: [any CaptionPipeline] = []
     /// Which engine the live session runs on, decided once per session in
     /// `launchSession`.
@@ -472,34 +472,41 @@ final class AppState: ObservableObject {
             spokenLanguage: spokenLanguageCode,
             englishLocale: captionLocale
         )
-        guard await AppleSpeechPipeline.isSupported(locale) else { return .whisper }
-
         let languageLocked = (spokenLanguageCode?.isEmpty == false)
-        var translationInstalled = false
-        var sourceISOCode: String? = nil
+
         if translate {
-            // Apple translate needs a KNOWN source language (it can't auto-detect
-            // from audio) and an already-installed source->English pack. Either
-            // missing -> WhisperKit, which auto-detects and translates ~99
-            // languages. Checked BEFORE the auth prompt so we don't nag.
+            // Translate path: WhisperKit transcribes the LOCKED source (reliable for
+            // non-English, unlike Apple's narrow speech assets) and Apple text-
+            // translates source->English. Needs a locked, non-denylisted source with
+            // an already-installed pack (no download = no nag). It does NOT need Apple
+            // speech support or the Speech permission (Whisper transcribes), so we
+            // never probe `isSupported` or trigger the auth prompt for a session
+            // Whisper will run anyway. Any miss -> WhisperKit's universal audio-translate.
             guard languageLocked, let iso = AppleSpeechLocale.isoCode(for: locale) else { return .whisper }
-            sourceISOCode = iso
             // Languages where Whisper translates better than Apple stay on Whisper
             // (e.g. id: Apple leans Malay). Skip the install probe entirely for them.
             guard !CaptionEngineKind.appleTranslateDenylist.contains(iso) else { return .whisper }
-            translationInstalled = await AppleTranslationService.isInstalled(sourceISOCode: iso)
-            guard translationInstalled else { return .whisper }
+            let translationInstalled = await AppleTranslationService.isInstalled(sourceISOCode: iso)
+            return CaptionEngineKind.select(
+                translate: true,
+                localeSupported: false, // unused on the translate path (Whisper transcribes)
+                authorized: false,      // unused on the translate path
+                osHasApple: true,
+                languageLocked: languageLocked,
+                translationInstalled: translationInstalled,
+                sourceISOCode: iso
+            )
         }
 
+        // Transcribe path: Apple `SpeechAnalyzer` fast-path when the locale is
+        // supported and Speech is authorized; otherwise WhisperKit.
+        guard await AppleSpeechPipeline.isSupported(locale) else { return .whisper }
         let authorized = await AppleSpeechPipeline.requestAuthorization()
         return CaptionEngineKind.select(
-            translate: translate,
+            translate: false,
             localeSupported: true,
             authorized: authorized,
-            osHasApple: true,
-            languageLocked: languageLocked,
-            translationInstalled: translationInstalled,
-            sourceISOCode: sourceISOCode
+            osHasApple: true
         )
     }
 
@@ -537,20 +544,45 @@ final class AppState: ObservableObject {
             let engineKind = await self.resolveEngine(forceWhisper: forceWhisper)
             guard self.sessionGeneration == generation else { return }
             self.activeSessionEngine = engineKind
-            let useApple = (engineKind != .whisper)
-            if useApple {
-                // Apple's models are OS-resident: English is instant (zero
-                // download); only an on-demand locale reports install progress
-                // via the per-lane installProgress closure below.
+            if engineKind == .appleTranscribe {
+                // Apple's transcribe models are OS-resident: English is instant
+                // (zero download); only an on-demand locale reports install progress
+                // via the per-lane installProgress closure below. The
+                // whisperAppleTranslate path still uses a WhisperKit transcriber, so
+                // it keeps the normal download/load progress UX.
                 self.startingNeedsDownload = false
                 self.downloadProgress = nil
+            }
+
+            // Attaches the download/load progress handler to a lane-0 WhisperKit
+            // engine (lane 1 reuses the now-cached model and no-ops prepare()).
+            // Used by the plain Whisper path and the whisperAppleTranslate inner.
+            // Honest waiting: percentage while downloading, then "warming up" when
+            // the CoreML compile starts.
+            func attachWhisperProgress(_ engine: WhisperKitEngine, laneIndex: Int) async {
+                guard laneIndex == 0 else { return }
+                await engine.setPrepareHandler { [weak self] event in
+                    Task { @MainActor in
+                        guard let self, self.sessionGeneration == generation else { return }
+                        switch event {
+                        case .downloading(let fraction):
+                            self.startingNeedsDownload = true
+                            self.downloadProgress = fraction
+                        case .loading:
+                            self.startingNeedsDownload = false
+                            self.downloadProgress = nil
+                        }
+                    }
+                }
             }
 
             var started: [any CaptionPipeline] = []
             do {
                 for (laneIndex, config) in configs.enumerated() {
                     let pipeline: any CaptionPipeline
-                    if useApple, #available(macOS 26, *) {
+                    switch engineKind {
+                    case .appleTranscribe:
+                        guard #available(macOS 26, *) else { throw AppleSpeechUnavailable.localeUnsupported }
                         let locale = AppleSpeechLocale.resolved(
                             spokenLanguage: self.spokenLanguageCode,
                             englishLocale: self.captionLocale
@@ -572,48 +604,46 @@ final class AppState: ObservableObject {
                                 }
                             }
                         }
-                        if engineKind == .appleTranslate {
-                            // Apple transcription (source locale) + Apple
-                            // Translation to English. Bilingual is near-free here.
-                            pipeline = AppleTranslatingPipeline(
-                                source: config.source,
-                                locale: locale,
-                                showOriginal: self.showOriginal,
-                                inputGain: Float(self.inputGain),
-                                speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin),
-                                installProgress: installProgress
-                            )
-                        } else {
-                            // Transcribe-only (translate off): Apple SpeechAnalyzer.
-                            pipeline = AppleSpeechPipeline(
-                                source: config.source,
-                                locale: locale,
-                                inputGain: Float(self.inputGain),
-                                speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin),
-                                installProgress: installProgress
-                            )
-                        }
-                    } else {
+                        // Transcribe-only (translate off): Apple SpeechAnalyzer.
+                        pipeline = AppleSpeechPipeline(
+                            source: config.source,
+                            locale: locale,
+                            inputGain: Float(self.inputGain),
+                            speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin),
+                            installProgress: installProgress
+                        )
+
+                    case .whisperAppleTranslate:
+                        guard #available(macOS 26, *) else { throw AppleSpeechUnavailable.translationUnavailable }
+                        let locale = AppleSpeechLocale.resolved(
+                            spokenLanguage: self.spokenLanguageCode,
+                            englishLocale: self.captionLocale
+                        )
+                        let iso = AppleSpeechLocale.isoCode(for: locale)
                         let engine = self.engine(for: config.origin)
-                        if laneIndex == 0 {
-                            // Honest waiting: percentage while downloading, then
-                            // "warming up" when the CoreML compile starts. Only the
-                            // first lane reports (it's the one that downloads); a
-                            // reused, already-loaded engine no-ops prepare().
-                            await engine.setPrepareHandler { [weak self] event in
-                                Task { @MainActor in
-                                    guard let self, self.sessionGeneration == generation else { return }
-                                    switch event {
-                                    case .downloading(let fraction):
-                                        self.startingNeedsDownload = true
-                                        self.downloadProgress = fraction
-                                    case .loading:
-                                        self.startingNeedsDownload = false
-                                        self.downloadProgress = nil
-                                    }
-                                }
-                            }
-                        }
+                        await attachWhisperProgress(engine, laneIndex: laneIndex)
+                        // Inner transcribes the LOCKED source language (the reliable
+                        // half); the decorator text-translates each final to English,
+                        // and owns bilingual (so the inner's `original` stays off).
+                        let inner = TranscriptionPipeline(
+                            source: config.source,
+                            engine: engine,
+                            task: .transcribe,
+                            spokenLanguage: self.spokenLanguageCode,
+                            showOriginal: false,
+                            inputGain: Float(self.inputGain),
+                            speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin)
+                        )
+                        pipeline = TranslatingPipeline(
+                            inner: inner,
+                            translator: AppleTranslationService(sourceISOCode: iso ?? "en"),
+                            sourceISO: iso,
+                            showOriginal: self.showOriginal
+                        )
+
+                    case .whisper:
+                        let engine = self.engine(for: config.origin)
+                        await attachWhisperProgress(engine, laneIndex: laneIndex)
                         pipeline = TranscriptionPipeline(
                             source: config.source,
                             engine: engine,

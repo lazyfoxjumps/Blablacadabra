@@ -1,33 +1,35 @@
-import AVFoundation
 import Foundation
 
-/// The Round 2 Apple translate fast-path: a `CaptionPipeline` that composes an
-/// `AppleSpeechPipeline` (streaming `SpeechAnalyzer` transcription in the source
-/// locale) with an `AppleTranslationService` (Apple `Translation` to English).
+/// A `CaptionPipeline` decorator that text-translates another pipeline's output to
+/// English, line by line. The `inner` pipeline does all the capture / transcription
+/// work and emits SOURCE-language `CaptionEvent`s; this layer runs each through a
+/// `TextTranslating` backend and re-emits the English (with the source kept above
+/// it in bilingual mode).
 ///
-/// It's a DECORATOR, not a fork: the inner `AppleSpeechPipeline` does all the
-/// capture / format-conversion / analyzer work and emits source-language
-/// `CaptionEvent`s; this layer translates each into English and re-emits. So the
-/// fast transcription path is shared with the transcribe-only mode, and bilingual
-/// is near-free: the original line is already the transcriber's text (no second
-/// transcription pass the way WhisperKit needs).
+/// It's a DECORATOR, not a fork, and it's engine-agnostic: the inner can be the
+/// Apple `SpeechAnalyzer` transcriber OR a WhisperKit `TranscriptionPipeline` in
+/// transcribe mode. That decoupling is the fix for the old translate path, where
+/// Whisper's audio `.translate` task produced garbage English on dialectal /
+/// low-resource languages: now Whisper does the (reliable) transcription and a
+/// dedicated text translator does the translation. Bilingual is near-free here: the
+/// source line is already the inner transcriber's output, no second decode the way
+/// WhisperKit's own audio-translate path needed.
 ///
 /// Translation is decoupled from transcription with the same backpressure policy
-/// `TranscriptionPipeline` uses: one translation in flight at a time, finals
-/// queued in order and never dropped, only the newest partial kept (a stale
-/// partial is worthless once a fresher one exists). This keeps the live latency
-/// the user feels low even if translation briefly lags a burst of speech.
+/// `TranscriptionPipeline` uses: one translation in flight at a time, finals queued
+/// in order and never dropped, only the newest partial kept (a stale partial is
+/// worthless once a fresher one exists). The live latency the user feels stays low
+/// even if translation briefly lags a burst of speech.
 ///
-/// Why the locale is fixed at init (no live `setTask`/`setSpokenLanguage`): Apple
-/// needs a KNOWN source language for both transcription and translation, so
-/// `AppState` only builds this when the user has locked a language, and a change
-/// to the language or the translate toggle is handled by an `AppState` restart.
-@available(macOS 26, *)
-public actor AppleTranslatingPipeline: CaptionPipeline {
-    private let inner: AppleSpeechPipeline
-    private let translator: AppleTranslationService
+/// Why the source language is fixed for the life of the pipeline (no live
+/// `setTask`/`setSpokenLanguage`): the translator needs a KNOWN source, so
+/// `AppState` only builds this when the user has locked a language, and a change to
+/// the language or the translate toggle is handled by an `AppState` restart.
+public actor TranslatingPipeline: CaptionPipeline {
+    private let inner: any CaptionPipeline
+    private let translator: any TextTranslating
     /// ISO 639-1 source code tagged on every emitted event so the status line can
-    /// name the translation direction (e.g. "Indonesian → English").
+    /// name the translation direction (e.g. "Arabic → English").
     private let sourceISO: String?
 
     /// Bilingual: when on, finals carry the source-language text above the English.
@@ -46,23 +48,14 @@ public actor AppleTranslatingPipeline: CaptionPipeline {
     private var innerFinished = false
 
     public init(
-        source: AudioSource,
-        locale: Locale,
-        showOriginal: Bool,
-        inputGain: Float = 1,
-        speakerIdentifier: SpeakerIdentifying? = nil,
-        installProgress: (@Sendable (Double) -> Void)? = nil
+        inner: any CaptionPipeline,
+        translator: any TextTranslating,
+        sourceISO: String?,
+        showOriginal: Bool
     ) {
-        self.inner = AppleSpeechPipeline(
-            source: source,
-            locale: locale,
-            inputGain: inputGain,
-            speakerIdentifier: speakerIdentifier,
-            installProgress: installProgress
-        )
-        let iso = AppleSpeechLocale.isoCode(for: locale)
-        self.sourceISO = iso
-        self.translator = AppleTranslationService(sourceISOCode: iso ?? "en")
+        self.inner = inner
+        self.translator = translator
+        self.sourceISO = sourceISO
         self.showOriginal = showOriginal
     }
 

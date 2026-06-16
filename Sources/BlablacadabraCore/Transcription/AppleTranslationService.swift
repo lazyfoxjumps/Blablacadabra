@@ -1,6 +1,21 @@
 import Foundation
 import Translation
 
+/// A line-by-line text translator backend for `TranslatingPipeline`. Kept minimal
+/// and engine-agnostic so the translation pump can be unit-tested with a fake, and
+/// so a future backend (e.g. an on-device LLM) can slot in without touching the
+/// pipeline. `AppleTranslationService` is the only conformer today.
+public protocol TextTranslating: Actor {
+    /// Warm/prepare the backend. Throws when the backend can't be used, so the
+    /// pipeline falls back BEFORE any audio is captured.
+    func start() async throws
+    /// Translate one line to the target language, or nil on empty input / a per-line
+    /// failure (the caller skips that line; the next keeps flowing).
+    func translate(_ text: String) async -> String?
+    /// Tear down the backend.
+    func stop()
+}
+
 /// On-device text translation via Apple's `Translation` framework (macOS 26),
 /// used by the Round 2 Apple translate fast-path. Translates a source language
 /// to English line by line.
@@ -20,7 +35,7 @@ import Translation
 /// and would nag, against the ND no-nag rule); an un-installed pair simply falls
 /// back to WhisperKit, which translates ~99 languages on its own.
 @available(macOS 26, *)
-public actor AppleTranslationService {
+public actor AppleTranslationService: TextTranslating {
     private let source: Locale.Language
     private let target: Locale.Language
     private var session: TranslationSession?
