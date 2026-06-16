@@ -150,6 +150,36 @@ private func steadyNoise(seconds: Double, rms: Float) -> [Float] {
         #expect(follower.floor == 0)
     }
 
+    @Test func continuationGateKeepsSoftTailThatOpenGateWouldTrim() {
+        // Over an elevated noise floor, a moderate-level tail can sit BELOW the
+        // strict open gate yet ABOVE the looser continuation gate. Hysteresis must
+        // keep it attached (it's clearly part of the running utterance) instead of
+        // counting it as trailing silence and trimming it off. Verified
+        // differentially: the same audio yields a LONGER final under the default
+        // (hysteresis) config than under a single-gate config.
+        func scenario() -> [Float] {
+            var a = steadyNoise(seconds: 0.6, rms: 0.02) // floor learns the bed
+            a += speech(seconds: 0.5)                     // loud onset opens
+            a += steadyNoise(seconds: 0.2, rms: 0.12)     // tail: under open, over continuation
+            a += silence(seconds: 1.0)                    // real silence finalizes
+            return a
+        }
+        func longestFinalSeconds(_ config: VADConfiguration) -> Double {
+            var chunker = VoiceChunker(config: config)
+            let lengths = chunker.process(scenario()).compactMap { event -> Int? in
+                if case .final(let samples) = event { return samples.count } else { return nil }
+            }
+            return Double(lengths.max() ?? 0) / Double(rate)
+        }
+
+        // Single-gate baseline: continuation gate == open gate (old behavior).
+        var single = VADConfiguration()
+        single.continuationGateMargin = single.noiseGateMargin
+        single.continuationEnergyThreshold = single.energyThreshold
+
+        #expect(longestFinalSeconds(VADConfiguration()) > longestFinalSeconds(single))
+    }
+
     @Test func flushFinalizesOpenUtterance() {
         var chunker = VoiceChunker()
         _ = chunker.process(speech(seconds: 0.5))

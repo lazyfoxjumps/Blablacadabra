@@ -12,11 +12,22 @@ public struct VADConfiguration: Sendable {
     /// See `noiseGateMargin`.
     public var energyThreshold: Float = 0.012
     /// Speech must exceed the tracked background-noise floor by this factor to
-    /// count as speech. This is what stops a loud-but-steady hiss (e.g. after the
+    /// OPEN an utterance. This is what stops a loud-but-steady hiss (e.g. after the
     /// input volume or boost is cranked up) from crossing `energyThreshold` and
     /// getting captioned as phantom speech. ~3× ≈ 9.5 dB above the floor; real
-    /// speech sits far higher.
+    /// speech onsets sit far higher. Paired with the lower `continuationGateMargin`
+    /// below: the OPEN gate is strict (rejects hiss), the CONTINUATION gate is loose
+    /// (keeps soft speech once we're sure it's speech). See `continuationGateMargin`.
     public var noiseGateMargin: Float = 3.0
+    /// Once an utterance is OPEN, a frame only has to exceed the floor by THIS
+    /// (smaller) factor to still count as speech rather than trailing silence.
+    /// Hysteresis: a strict gate opens the utterance (no phantom captions on hiss),
+    /// a looser gate holds it (quiet sentence tails and soft inter-word dips stay
+    /// attached instead of being counted as silence and trimmed off). ~1.5× ≈ 3.5 dB
+    /// above the floor: comfortably above steady hiss (which sits AT the floor), but
+    /// low enough that a voice trailing off isn't clipped. Must be < `noiseGateMargin`
+    /// for the hysteresis to exist; set equal to it to restore single-gate behavior.
+    public var continuationGateMargin: Float = 1.5
     /// Seconds for the noise-floor estimate to climb toward a louder steady
     /// background (the EMA rise time). The estimate snaps DOWN instantly to a
     /// quieter level; it only climbs slowly, so a brief loud moment doesn't
@@ -29,24 +40,34 @@ public struct VADConfiguration: Sendable {
     /// `maxNoiseFloor * noiseGateMargin` (≈0.15) stays comfortably below normal
     /// speech RMS (~0.1-0.3) while sitting above typical broadband hiss.
     public var maxNoiseFloor: Float = 0.05
+    /// Absolute floor for the CONTINUATION gate (the in-utterance offset gate),
+    /// mirroring `energyThreshold` for the open gate. Lower than `energyThreshold`
+    /// so that in a genuinely quiet room (floor ≈ 0) a soft sentence tail still
+    /// reads as speech and survives instead of being trimmed. Only ever consulted
+    /// once an utterance is already open, so it can't let hiss start a phantom one.
+    public var continuationEnergyThreshold: Float = 0.006
     /// Consecutive above-threshold frames required to OPEN an utterance. Keeps a
     /// lone click, notification ping, or single noisy frame from starting a
     /// phantom utterance. 1 = open on the first speech frame (old behavior).
     public var onsetSpeechFrames: Int = 2
-    /// This much continuous silence after speech finalizes the utterance.
-    public var silenceToFinalize: Double = 0.6
+    /// This much continuous silence after speech finalizes the utterance. Kept
+    /// just under typical conversational turn-taking so a finalized line (and its
+    /// translation) lands fast, without splitting a speaker who pauses mid-sentence.
+    public var silenceToFinalize: Double = 0.45
     /// Force-finalize an utterance that runs longer than this (keeps latency
     /// bounded during continuous speech; well under Whisper's 30s window).
     public var maxUtteranceDuration: Double = 10.0
     /// While an utterance is open, emit a rolling partial this often.
     public var partialInterval: Double = 1.0
-    /// Audio kept from just before speech onset so first syllables survive.
-    public var preRollDuration: Double = 0.25
+    /// Audio kept from just before speech onset so first syllables survive. Sized
+    /// to cover a soft sentence opening that sits below the (strict) open gate for
+    /// a beat before the voice rises enough to trigger it.
+    public var preRollDuration: Double = 0.4
     /// Utterances with less speech than this are dropped as blips (clicks,
     /// notification pings).
     public var minSpeechDuration: Double = 0.3
     /// Trailing silence kept on a finalized utterance.
-    public var trailingSilenceKept: Double = 0.2
+    public var trailingSilenceKept: Double = 0.35
     /// When an utterance hits `maxUtteranceDuration` mid-speech, the cut lands
     /// on the quietest frame within this much trailing audio (instead of dead
     /// at the limit, which chops words in half). The audio after the cut seeds
@@ -183,11 +204,18 @@ public struct VoiceChunker {
     private mutating func processFrame(_ frame: [Float]) -> Event? {
         let energy = rms(frame)
         noiseFloor.update(energy)
-        let threshold = noiseFloor.threshold(
+        // Hysteresis: a strict OPEN gate starts an utterance (rejecting steady
+        // hiss), a looser CONTINUATION gate decides speech-vs-silence once one is
+        // already running (so a soft tail or inter-word dip stays attached instead
+        // of being trimmed). See VADConfiguration for the rationale.
+        let isOnset = energy >= noiseFloor.threshold(
             margin: config.noiseGateMargin,
             absoluteMinimum: config.energyThreshold
         )
-        let isSpeech = energy >= threshold
+        let isSpeech = energy >= noiseFloor.threshold(
+            margin: config.continuationGateMargin,
+            absoluteMinimum: config.continuationEnergyThreshold
+        )
 
         guard speaking else {
             // Keep a rolling pre-roll of recent audio so the first syllables
@@ -197,7 +225,7 @@ public struct VoiceChunker {
             if preRoll.count > maxPreRoll {
                 preRoll.removeFirst(preRoll.count - maxPreRoll)
             }
-            if isSpeech {
+            if isOnset {
                 onsetFrames += 1
                 // Open only after a few consecutive speech frames, so a lone
                 // click/ping or single noisy frame can't start a phantom
@@ -219,12 +247,14 @@ public struct VoiceChunker {
 
         utterance.append(contentsOf: frame)
         framesSinceLastPartial += 1
-        if isSpeech {
-            speechFramesInUtterance += 1
-            trailingSilenceFrames = 0
-        } else {
-            trailingSilenceFrames += 1
-        }
+        // The min-length / blip-drop counter keys off the STRICT open gate, so a
+        // transient (e.g. the noise floor still ramping up to a freshly-boosted
+        // hiss) can't pad itself to a real utterance's length via the loose gate.
+        if isOnset { speechFramesInUtterance += 1 }
+        // Trailing silence (which drives finalize + trim) keys off the LOOSE
+        // continuation gate, so a soft sentence tail keeps the utterance alive and
+        // is kept rather than counted as silence and trimmed.
+        if isSpeech { trailingSilenceFrames = 0 } else { trailingSilenceFrames += 1 }
 
         let utteranceFrames = utterance.count / frameSize
         if trailingSilenceFrames >= silenceFramesToFinalize {
@@ -279,28 +309,29 @@ public struct VoiceChunker {
         let remainder = Array(utterance.suffix(from: min(cut, utterance.count)))
 
         // Stay in speaking state, seeded with the remainder; recount its
-        // speech/silence frames so finalize bookkeeping starts honest. Use the
-        // current adaptive threshold (a snapshot is fine: these frames were
-        // already fed through the follower on the way in).
+        // speech/silence frames so finalize bookkeeping starts honest. The
+        // utterance is already open, so the remainder uses the CONTINUATION gate
+        // (a snapshot is fine: these frames were already fed through the follower
+        // on the way in).
         utterance = remainder
         speaking = true
         framesSinceLastPartial = 0
         speechFramesInUtterance = 0
         trailingSilenceFrames = 0
-        let remainderThreshold = noiseFloor.threshold(
+        let remainderOnsetThreshold = noiseFloor.threshold(
             margin: config.noiseGateMargin,
             absoluteMinimum: config.energyThreshold
+        )
+        let remainderSpeechThreshold = noiseFloor.threshold(
+            margin: config.continuationGateMargin,
+            absoluteMinimum: config.continuationEnergyThreshold
         )
         let remainderFrames = remainder.count / frameSize
         for index in 0..<remainderFrames {
             let start = index * frameSize
-            let frame = Array(remainder[start..<(start + frameSize)])
-            if rms(frame) >= remainderThreshold {
-                speechFramesInUtterance += 1
-                trailingSilenceFrames = 0
-            } else {
-                trailingSilenceFrames += 1
-            }
+            let energy = rms(Array(remainder[start..<(start + frameSize)]))
+            if energy >= remainderOnsetThreshold { speechFramesInUtterance += 1 }
+            if energy >= remainderSpeechThreshold { trailingSilenceFrames = 0 } else { trailingSilenceFrames += 1 }
         }
 
         return .final(chunk)
