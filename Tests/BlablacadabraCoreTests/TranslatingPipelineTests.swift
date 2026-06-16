@@ -18,7 +18,7 @@ private actor FakeTranslator: TextTranslating {
         started = true
     }
 
-    func translate(_ text: String) async -> String? {
+    func translate(_ text: String, from sourceISO: String?) async -> String? {
         inputs.append(text)
         return "EN(\(text))"
     }
@@ -27,6 +27,26 @@ private actor FakeTranslator: TextTranslating {
 
     var seenInputs: [String] { inputs }
     var didStart: Bool { started }
+}
+
+/// A fake router-style translator: serves only the languages in `servable`,
+/// returning nil for anything else (so the decorator must use the inner's carried
+/// fallback). Records the (text, from) pairs it was asked to translate.
+private actor FakeRouter: TextTranslating {
+    private let servable: Set<String>
+    private(set) var inputs: [(text: String, from: String?)] = []
+
+    init(servable: Set<String>) { self.servable = servable }
+
+    func start() async throws {}
+    func translate(_ text: String, from sourceISO: String?) async -> String? {
+        inputs.append((text, sourceISO))
+        guard let iso = sourceISO, servable.contains(iso) else { return nil }
+        return "AR(\(text))"
+    }
+    func stop() {}
+
+    var seenInputs: [(text: String, from: String?)] { inputs }
 }
 
 /// A fake inner `CaptionPipeline` that plays a fixed list of source-language events
@@ -101,6 +121,49 @@ private actor ScriptedPipeline: CaptionPipeline {
         #expect(out == [
             .final("EN(salam)", original: "salam", language: "ar", speaker: .speaker(1)),
         ])
+    }
+
+    @Test func autoPathRoutesByPerLineDetectedLanguage() async throws {
+        // The inner (auto mode) tags each final with the detected source language and
+        // carries a Whisper audio-translate fallback in `original`. The decorator
+        // routes by the per-line language: a servable one gets the router's output, an
+        // unservable one falls back to the carried English. The emitted line is tagged
+        // with the line's own language, not a fixed pipeline source.
+        let inner = ScriptedPipeline([
+            .final("salam", original: "WHISPER(salam)", language: "ar", speaker: .speaker(1)),
+            .final("halo", original: "WHISPER(halo)", language: "id", speaker: .speaker(2)),
+        ])
+        let pipeline = TranslatingPipeline(
+            inner: inner,
+            translator: FakeRouter(servable: ["ar"]),
+            sourceISO: nil,
+            showOriginal: false
+        )
+
+        let out = try await collect(pipeline)
+
+        #expect(out == [
+            .final("AR(salam)", original: nil, language: "ar", speaker: .speaker(1)),
+            .final("WHISPER(halo)", original: nil, language: "id", speaker: .speaker(2)),
+        ])
+    }
+
+    @Test func autoPathSkipsLineWhenNeitherRouterNorFallbackHasText() async throws {
+        // Unservable language AND no carried fallback (inner produced none) -> the line
+        // is skipped, never blank-but-present.
+        let inner = ScriptedPipeline([
+            .final("halo", original: nil, language: "id", speaker: .speaker(1)),
+        ])
+        let pipeline = TranslatingPipeline(
+            inner: inner,
+            translator: FakeRouter(servable: ["ar"]),
+            sourceISO: nil,
+            showOriginal: false
+        )
+
+        let out = try await collect(pipeline)
+
+        #expect(out.isEmpty)
     }
 
     @Test func startThrowsAndSkipsCaptureWhenTranslatorUnavailable() async throws {

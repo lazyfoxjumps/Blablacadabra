@@ -28,8 +28,10 @@ import Foundation
 public actor TranslatingPipeline: CaptionPipeline {
     private let inner: any CaptionPipeline
     private let translator: any TextTranslating
-    /// ISO 639-1 source code tagged on every emitted event so the status line can
-    /// name the translation direction (e.g. "Arabic → English").
+    /// Fallback ISO 639-1 source code, used to tag/route a line only when the inner
+    /// event carries no language of its own. On the LOCKED path it's the locked
+    /// language (every line is that language); on the AUTO path it's nil and the
+    /// per-event detected language drives both routing and the status line.
     private let sourceISO: String?
 
     /// Bilingual: when on, finals carry the source-language text above the English.
@@ -40,10 +42,13 @@ public actor TranslatingPipeline: CaptionPipeline {
 
     // Backpressure state (mirrors TranscriptionPipeline): newest partial only,
     // finals in order, one translation at a time. Each queued final carries the
-    // speaker label the inner pipeline diarized, so it rides through translation
-    // and onto the emitted English line (partials stay unlabeled, as elsewhere).
-    private var pendingPartial: String?
-    private var finalQueue: [(text: String, speaker: SpeakerID?)] = []
+    // inner pipeline's per-line metadata: the detected source `language` (routes the
+    // translation and tags the emitted line), an `english` fallback (Whisper's own
+    // audio-translate, used when the router can't serve the language; nil on the
+    // locked path), and the diarized `speaker` (rides through onto the English line;
+    // partials stay unlabeled, as elsewhere).
+    private var pendingPartial: (text: String, language: String?)?
+    private var finalQueue: [(source: String, fallback: String?, language: String?, speaker: SpeakerID?)] = []
     private var translating = false
     private var innerFinished = false
 
@@ -123,10 +128,13 @@ public actor TranslatingPipeline: CaptionPipeline {
 
     private func ingest(_ event: CaptionEvent) {
         switch event {
-        case .partial(let text, _, _):
-            pendingPartial = text
-        case .final(let text, _, _, let speaker):
-            finalQueue.append((text, speaker))
+        case .partial(let text, let language, _):
+            pendingPartial = (text, language)
+        case .final(let text, let original, let language, let speaker):
+            // On the auto path `original` is the inner's carried Whisper-translate
+            // fallback; on the locked path it's nil. Either way the decorator rebuilds
+            // the bilingual original from the SOURCE text it just routed.
+            finalQueue.append((source: text, fallback: original, language: language, speaker: speaker))
             pendingPartial = nil // the final supersedes its own partials
         }
         pump()
@@ -137,37 +145,36 @@ public actor TranslatingPipeline: CaptionPipeline {
     private func pump() {
         guard !translating else { return }
 
-        let text: String
-        let isFinal: Bool
-        let speaker: SpeakerID?
-        if !finalQueue.isEmpty {
-            let item = finalQueue.removeFirst()
-            text = item.text
-            speaker = item.speaker
-            isFinal = true
+        if let item = finalQueue.first {
+            finalQueue.removeFirst()
+            let from = item.language ?? sourceISO
+            translating = true
+            Task {
+                // Apple (via the router/service) is preferred; on a miss the line uses
+                // the inner's carried Whisper-translate fallback so it never goes blank.
+                let english = (await self.translator.translate(item.source, from: from)) ?? item.fallback
+                if let english {
+                    self.yieldCaption(.final(english, original: self.showOriginal ? item.source : nil, language: from, speaker: item.speaker))
+                }
+                self.translating = false
+                self.pump()
+            }
         } else if let partial = pendingPartial {
             pendingPartial = nil
-            text = partial
-            speaker = nil
-            isFinal = false
+            let from = partial.language ?? sourceISO
+            translating = true
+            Task {
+                // Partials have no fallback (kept cheap); a miss just shows nothing
+                // until the final settles it.
+                let english = await self.translator.translate(partial.text, from: from)
+                if let english {
+                    self.yieldCaption(.partial(english, language: from))
+                }
+                self.translating = false
+                self.pump()
+            }
         } else {
             finishIfDrained()
-            return
-        }
-
-        translating = true
-        Task {
-            let english = await translator.translate(text)
-            if let english {
-                if isFinal {
-                    self.yieldCaption(.final(english, original: self.showOriginal ? text : nil, language: self.sourceISO, speaker: speaker))
-                } else {
-                    self.yieldCaption(.partial(english, language: self.sourceISO))
-                }
-            }
-            // A nil translation (rare per-line failure) is skipped, not fatal.
-            self.translating = false
-            self.pump()
         }
     }
 

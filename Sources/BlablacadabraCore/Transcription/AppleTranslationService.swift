@@ -9,9 +9,13 @@ public protocol TextTranslating: Actor {
     /// Warm/prepare the backend. Throws when the backend can't be used, so the
     /// pipeline falls back BEFORE any audio is captured.
     func start() async throws
-    /// Translate one line to the target language, or nil on empty input / a per-line
-    /// failure (the caller skips that line; the next keeps flowing).
-    func translate(_ text: String) async -> String?
+    /// Translate one line to the target language. `sourceISO` is the ISO 639-1 code
+    /// of the line's source language (nil when unknown); a single-language backend
+    /// ignores it, while a multi-language `TranslationRouter` uses it to pick the
+    /// right per-language session. Returns nil on empty input, an unknown/unservable
+    /// source, or a per-line failure (the caller skips that line or uses a fallback;
+    /// the next line keeps flowing).
+    func translate(_ text: String, from sourceISO: String?) async -> String?
     /// Tear down the backend.
     func stop()
 }
@@ -84,8 +88,10 @@ public actor AppleTranslationService: TextTranslating {
 
     /// Translates one line to the target language. Returns nil on empty input or
     /// a per-line failure: one bad translation shouldn't kill a live session, the
-    /// caller just skips that line (the next one keeps flowing).
-    public func translate(_ text: String) async -> String? {
+    /// caller just skips that line (the next one keeps flowing). `sourceISO` is
+    /// ignored here: this actor is fixed to a single source/target pair at init
+    /// (the multi-language `TranslationRouter` is what dispatches by source).
+    public func translate(_ text: String, from sourceISO: String? = nil) async -> String? {
         guard let session, !text.isEmpty else { return nil }
         do {
             let response = try await session.translate(text)

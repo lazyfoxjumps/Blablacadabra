@@ -42,15 +42,18 @@ public enum CaptionEngineKind: Equatable, Sendable {
     /// - translate OFF: the Apple `SpeechAnalyzer` transcribe fast-path when the OS
     ///   has the API, the locale is Apple-supported, and Speech is authorized;
     ///   otherwise WhisperKit.
-    /// - translate ON: `whisperAppleTranslate` when the OS has the macOS 26
-    ///   `Translation` framework, the source language is LOCKED (Apple text-translate
-    ///   needs a known source, and a locked language is also Whisper's reliable
-    ///   transcribe mode), the source->English pack is already INSTALLED (we never
-    ///   trigger a download here, to honor the no-nag rule), and the source is not on
-    ///   `appleTranslateDenylist`. This path deliberately does NOT require Apple
-    ///   speech support or the Speech permission: WhisperKit does the transcription,
-    ///   so neither is relevant. Any miss falls back to WhisperKit's universal
-    ///   audio-translate.
+    /// - translate ON, with the macOS 26 `Translation` framework: `whisperAppleTranslate`,
+    ///   WhisperKit transcribes and a text translator handles English. Two sub-cases:
+    ///   - LOCKED source: chosen only when the source->English pack is already
+    ///     INSTALLED (no download = no nag) and the source isn't on
+    ///     `appleTranslateDenylist`; a single `AppleTranslationService` does the work.
+    ///   - AUTO (unlocked) source: always chosen on macOS 26. WhisperKit detects the
+    ///     language per line and a `TranslationRouter` routes each line (Apple where a
+    ///     pack is installed and policy allows, else the carried Whisper audio-translate
+    ///     fallback), so install/denylist are decided per language AT RUNTIME, not here.
+    ///   This path deliberately does NOT require Apple speech support or the Speech
+    ///   permission: WhisperKit does the transcription, so neither is relevant. Without
+    ///   the macOS 26 framework it falls back to WhisperKit's universal audio-translate.
     public static func select(
         translate: Bool,
         localeSupported: Bool,
@@ -62,7 +65,10 @@ public enum CaptionEngineKind: Equatable, Sendable {
     ) -> CaptionEngineKind {
         guard osHasApple else { return .whisper }
         if translate {
-            guard languageLocked, translationInstalled else { return .whisper }
+            // Auto-detect: the router decides Apple-vs-fallback per detected language.
+            guard languageLocked else { return .whisperAppleTranslate }
+            // Locked: needs an installed, non-denylisted pair, else Whisper handles it.
+            guard translationInstalled else { return .whisper }
             if let iso = sourceISOCode, appleTranslateDenylist.contains(iso) { return .whisper }
             return .whisperAppleTranslate
         }

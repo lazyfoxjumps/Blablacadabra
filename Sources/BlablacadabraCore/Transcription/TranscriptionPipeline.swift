@@ -59,6 +59,22 @@ public actor TranscriptionPipeline: CaptionPipeline {
     /// the live latency the user feels stays low).
     public private(set) var showOriginal: Bool
 
+    /// AUTO-detect feed for a `TranslatingPipeline` (Plan B). When true this
+    /// pipeline is the INNER of a text-translating decorator on the unlocked
+    /// translate path, and it does two extra things beyond plain transcription:
+    ///   1. it DETECTS the source language even though the task is transcribe
+    ///      (locked sessions skip this), tagging every event so the router knows
+    ///      what to translate FROM, and
+    ///   2. on each FINAL it also runs Whisper's own audio `.translate` pass and
+    ///      carries that English in the event's `original` field as a per-line
+    ///      FALLBACK. The decorator promotes the router's (Apple) translation when
+    ///      the detected language is servable and uses this fallback otherwise, so a
+    ///      language Apple can't translate still gets a caption instead of nothing.
+    /// The extra audio-translate decode is the documented cost of robust auto-detect
+    /// (Handoff item 6/7); it only applies to unlocked translate on macOS 26. The
+    /// LOCKED path leaves this false and pays a single decode. nil for partials.
+    private let autoTranslateSource: Bool
+
     /// Cached source language, used in translate mode only. The engine detects
     /// ONCE (on the first final of the session) and reuses the result for every
     /// later chunk: per-chunk detection flip-flops on short or ambiguous audio,
@@ -92,6 +108,7 @@ public actor TranscriptionPipeline: CaptionPipeline {
         showOriginal: Bool = false,
         inputGain: Float = 1,
         speakerIdentifier: SpeakerIdentifying? = nil,
+        autoTranslateSource: Bool = false,
         vadConfig: VADConfiguration = VADConfiguration()
     ) {
         self.source = source
@@ -101,6 +118,7 @@ public actor TranscriptionPipeline: CaptionPipeline {
         self.showOriginal = showOriginal
         self.inputGain = max(0.1, inputGain)
         self.speakerIdentifier = speakerIdentifier
+        self.autoTranslateSource = autoTranslateSource
         self.vadConfig = vadConfig
     }
 
@@ -233,6 +251,13 @@ public actor TranscriptionPipeline: CaptionPipeline {
         // skips detection; auto mode detects once and reuses (see below).
         let language = await resolvedLanguage(for: samples, isFinal: isFinal)
 
+        // Auto-detect feed for a text-translating decorator (Plan B): emit the
+        // SOURCE transcription tagged with the detected language, and on finals also
+        // carry Whisper's audio-translate as a per-line fallback (see the property).
+        if autoTranslateSource {
+            return await produceAutoTranslateSource(samples: samples, language: language, isFinal: isFinal)
+        }
+
         // Partials never carry a speaker (they inherit the previous line's on
         // screen), so there's nothing to run concurrently.
         guard isFinal else {
@@ -285,6 +310,33 @@ public actor TranscriptionPipeline: CaptionPipeline {
         return .final(english, original: original, language: language)
     }
 
+    /// The auto-detect-source path (Plan B inner). Emits the SOURCE-language text as
+    /// the event payload, tagged with the detected language so the decorator's router
+    /// knows what to translate FROM. On finals it ALSO runs Whisper's audio-translate
+    /// and stows that English in `original` as the decorator's per-line fallback for
+    /// languages Apple can't serve. `original` is plumbing here (the decorator never
+    /// shows it directly; it rebuilds the bilingual original from the source text).
+    private func produceAutoTranslateSource(samples: [Float], language: String?, isFinal: Bool) async -> CaptionEvent? {
+        let src = (try? await engine.transcribe(samples, task: .transcribe, language: language)) ?? .empty
+        guard !src.text.isEmpty else { return nil }
+        let resolved = language ?? src.detectedLanguage
+
+        guard isFinal else {
+            return .partial(src.text, language: resolved)
+        }
+
+        // Diarize concurrently (the engine actor serializes the two decodes anyway,
+        // so the embedding overlaps the transcription pass at no extra latency).
+        async let speaker = identifySpeaker(samples)
+        let englishFallback = ((try? await engine.transcribe(samples, task: .translate, language: language)) ?? .empty).text
+        return .final(
+            src.text,
+            original: englishFallback.isEmpty ? nil : englishFallback,
+            language: resolved,
+            speaker: await speaker
+        )
+    }
+
     /// Labels a finalized utterance, or nil when speaker colors are off or the
     /// labeler has nothing for this chunk. Always fail-soft.
     private func identifySpeaker(_ samples: [Float]) async -> SpeakerID? {
@@ -304,7 +356,9 @@ public actor TranscriptionPipeline: CaptionPipeline {
     /// next final settles it anyway).
     private func resolvedLanguage(for samples: [Float], isFinal: Bool) async -> String? {
         if let spokenLanguage { return spokenLanguage }
-        guard task == .translate else { return nil }
+        // Auto-detect runs while translating OR when feeding a translating decorator
+        // in auto mode (Plan B); plain transcription assumes English (see above).
+        guard task == .translate || autoTranslateSource else { return nil }
         if let lastLanguage { return lastLanguage }
         guard isFinal else { return nil }
         let detected = (try? await engine.detectLanguage(samples)) ?? nil

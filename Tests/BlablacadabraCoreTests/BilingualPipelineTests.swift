@@ -194,6 +194,32 @@ private func collect(_ pipeline: TranscriptionPipeline) async throws -> [Caption
         #expect(counts.transcribe == 1)
     }
 
+    @Test func autoTranslateSourceEmitsSourceTaggedWithCarriedFallback() async throws {
+        // Plan B inner: feeds a text-translating decorator on the UNLOCKED translate
+        // path. It transcribes the SOURCE (the event payload), DETECTS the language to
+        // tag it, and carries Whisper's own audio-translate in `original` as the
+        // decorator's per-line fallback. No language is locked.
+        let engine = FakeEngine(english: "How are you?", original: "Apa kabar?", language: "id")
+        let pipeline = TranscriptionPipeline(
+            source: ScriptedSource(), engine: engine, task: .transcribe,
+            spokenLanguage: nil, showOriginal: false, autoTranslateSource: true
+        )
+        let finals = try await collect(pipeline).compactMap { event -> (String, String?, String?)? in
+            if case let .final(text, original, language, _) = event { return (text, original, language) }
+            return nil
+        }
+        #expect(finals.count == 1)
+        #expect(finals[0].0 == "Apa kabar?")   // payload is the SOURCE text
+        #expect(finals[0].1 == "How are you?") // carried Whisper-translate fallback
+        #expect(finals[0].2 == "id")           // detected source language tag
+        let counts = await engine.counts
+        // Detect once (to tag), transcribe the source, and one audio-translate for the
+        // carried fallback. The extra translate decode is the documented auto cost.
+        #expect(counts.detect == 1)
+        #expect(counts.transcribe == 1)
+        #expect(counts.translate == 1)
+    }
+
     @Test func autoModeDetectsOnceAndReusesIt() async throws {
         let engine = FakeEngine(english: "Hello.", original: "Halo.", language: "id")
         let pipeline = TranscriptionPipeline(

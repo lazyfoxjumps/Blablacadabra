@@ -53,16 +53,28 @@ import Testing
         )
     }
 
-    @Test func translateFallsBackWhenLanguageUnlocked() {
-        // No locked language -> Apple can't auto-detect a source; WhisperKit does.
+    @Test func translateUnlockedUsesRouterOnMacOS26() {
+        // No locked language: WhisperKit detects per line and the TranslationRouter
+        // routes each (Apple where installed, else the Whisper fallback). The install
+        // flag is irrelevant here (decided per language at runtime, not up front).
+        #expect(
+            CaptionEngineKind.select(
+                translate: true,
+                localeSupported: false,
+                authorized: false,
+                osHasApple: true,
+                languageLocked: false,
+                translationInstalled: false
+            ) == .whisperAppleTranslate
+        )
+        // Without the macOS 26 framework the unlocked path falls back to Whisper.
         #expect(
             CaptionEngineKind.select(
                 translate: true,
                 localeSupported: true,
                 authorized: true,
-                osHasApple: true,
-                languageLocked: false,
-                translationInstalled: true
+                osHasApple: false,
+                languageLocked: false
             ) == .whisper
         )
     }
@@ -163,9 +175,10 @@ import Testing
         // Everything needs osHasApple (macOS 26). Then:
         // - translate OFF -> appleTranscribe iff (authorized && localeSupported),
         //   else whisper.
-        // - translate ON  -> whisperAppleTranslate iff (languageLocked &&
-        //   translationInstalled && source not denylisted), else whisper. The
-        //   translate path ignores authorized/localeSupported (Whisper transcribes).
+        // - translate ON  -> whisperAppleTranslate when UNLOCKED (router decides per
+        //   language at runtime), or when locked && translationInstalled && source not
+        //   denylisted; else whisper. The translate path ignores
+        //   authorized/localeSupported (Whisper transcribes).
         // "ja" stands in for any non-denylisted source, "id" for a denylisted one,
         // nil for "unknown / don't care".
         for translate in [false, true] {
@@ -180,7 +193,11 @@ import Testing
                                     if !osHasApple {
                                         expected = .whisper
                                     } else if translate {
-                                        expected = (languageLocked && translationInstalled && !denylisted) ? .whisperAppleTranslate : .whisper
+                                        if !languageLocked {
+                                            expected = .whisperAppleTranslate // router decides per language
+                                        } else {
+                                            expected = (translationInstalled && !denylisted) ? .whisperAppleTranslate : .whisper
+                                        }
                                     } else {
                                         expected = (authorized && localeSupported) ? .appleTranscribe : .whisper
                                     }

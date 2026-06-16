@@ -475,26 +475,37 @@ final class AppState: ObservableObject {
         let languageLocked = (spokenLanguageCode?.isEmpty == false)
 
         if translate {
-            // Translate path: WhisperKit transcribes the LOCKED source (reliable for
-            // non-English, unlike Apple's narrow speech assets) and Apple text-
-            // translates source->English. Needs a locked, non-denylisted source with
-            // an already-installed pack (no download = no nag). It does NOT need Apple
-            // speech support or the Speech permission (Whisper transcribes), so we
-            // never probe `isSupported` or trigger the auth prompt for a session
-            // Whisper will run anyway. Any miss -> WhisperKit's universal audio-translate.
-            guard languageLocked, let iso = AppleSpeechLocale.isoCode(for: locale) else { return .whisper }
-            // Languages where Whisper translates better than Apple stay on Whisper
-            // (e.g. id: Apple leans Malay). Skip the install probe entirely for them.
-            guard !CaptionEngineKind.appleTranslateDenylist.contains(iso) else { return .whisper }
-            let translationInstalled = await AppleTranslationService.isInstalled(sourceISOCode: iso)
+            // Translate path: WhisperKit transcribes (reliable for non-English, unlike
+            // Apple's narrow speech assets) and a text translator handles source->English.
+            // It does NOT need Apple speech support or the Speech permission (Whisper
+            // transcribes), so we never probe `isSupported` or trigger the auth prompt
+            // for a session Whisper will run anyway.
+            if languageLocked, let iso = AppleSpeechLocale.isoCode(for: locale) {
+                // LOCKED source -> a single AppleTranslationService. Needs a
+                // non-denylisted source with an already-installed pack (no download =
+                // no nag); any miss -> WhisperKit's universal audio-translate.
+                guard !CaptionEngineKind.appleTranslateDenylist.contains(iso) else { return .whisper }
+                let translationInstalled = await AppleTranslationService.isInstalled(sourceISOCode: iso)
+                return CaptionEngineKind.select(
+                    translate: true,
+                    localeSupported: false, // unused on the translate path (Whisper transcribes)
+                    authorized: false,      // unused on the translate path
+                    osHasApple: true,
+                    languageLocked: true,
+                    translationInstalled: translationInstalled,
+                    sourceISOCode: iso
+                )
+            }
+            // AUTO (unlocked) source -> WhisperKit detects per line and a
+            // TranslationRouter routes each line (Apple where a pack is installed +
+            // policy allows, else the carried Whisper audio-translate fallback). The
+            // per-language decision happens at runtime, so there's no up-front probe.
             return CaptionEngineKind.select(
                 translate: true,
-                localeSupported: false, // unused on the translate path (Whisper transcribes)
-                authorized: false,      // unused on the translate path
+                localeSupported: false,
+                authorized: false,
                 osHasApple: true,
-                languageLocked: languageLocked,
-                translationInstalled: translationInstalled,
-                sourceISOCode: iso
+                languageLocked: false
             )
         }
 
@@ -615,29 +626,37 @@ final class AppState: ObservableObject {
 
                     case .whisperAppleTranslate:
                         guard #available(macOS 26, *) else { throw AppleSpeechUnavailable.translationUnavailable }
-                        let locale = AppleSpeechLocale.resolved(
-                            spokenLanguage: self.spokenLanguageCode,
-                            englishLocale: self.captionLocale
-                        )
-                        let iso = AppleSpeechLocale.isoCode(for: locale)
                         let engine = self.engine(for: config.origin)
                         await attachWhisperProgress(engine, laneIndex: laneIndex)
-                        // Inner transcribes the LOCKED source language (the reliable
-                        // half); the decorator text-translates each final to English,
-                        // and owns bilingual (so the inner's `original` stays off).
+                        let locked = (self.spokenLanguageCode?.isEmpty == false)
+                        let lockedISO = locked
+                            ? AppleSpeechLocale.isoCode(for: AppleSpeechLocale.resolved(
+                                spokenLanguage: self.spokenLanguageCode,
+                                englishLocale: self.captionLocale))
+                            : nil
+                        // LOCKED (Plan A): inner transcribes the known source (one
+                        // decode); a single AppleTranslationService text-translates each
+                        // final. AUTO (Plan B): inner transcribes + DETECTS the language
+                        // and carries a Whisper audio-translate fallback per final; a
+                        // TranslationRouter routes each line by that detected language.
+                        // The decorator owns bilingual either way (inner `original` off).
                         let inner = TranscriptionPipeline(
                             source: config.source,
                             engine: engine,
                             task: .transcribe,
-                            spokenLanguage: self.spokenLanguageCode,
+                            spokenLanguage: lockedISO,
                             showOriginal: false,
                             inputGain: Float(self.inputGain),
-                            speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin)
+                            speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin),
+                            autoTranslateSource: !locked
                         )
+                        let translator: any TextTranslating = locked
+                            ? AppleTranslationService(sourceISOCode: lockedISO ?? "en")
+                            : TranslationRouter()
                         pipeline = TranslatingPipeline(
                             inner: inner,
-                            translator: AppleTranslationService(sourceISOCode: iso ?? "en"),
-                            sourceISO: iso,
+                            translator: translator,
+                            sourceISO: lockedISO,
                             showOriginal: self.showOriginal
                         )
 
