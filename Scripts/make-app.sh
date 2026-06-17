@@ -78,5 +78,13 @@ PLIST
 # Ad-hoc signature: enough for local use and stable TCC identity per machine.
 codesign --force --sign - "$APP"
 
+# Force LaunchServices to re-index the bundle. Without this, ad-hoc signed
+# rebuilds at the same path keep serving the icon cache from the previous
+# bundle (or no icon at all in dialogs like the screen-recording picker).
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+  "$LSREGISTER" -f "$APP" >/dev/null 2>&1 || true
+fi
+
 echo "Done: $APP"
 echo "First launch: right-click > Open (ad-hoc signed, Gatekeeper will ask once)."

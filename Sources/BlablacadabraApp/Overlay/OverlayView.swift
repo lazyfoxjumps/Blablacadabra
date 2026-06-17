@@ -32,6 +32,17 @@ struct OverlayView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(colors.background.color.opacity(state.effectiveOverlayOpacity))
         )
+        .overlay(alignment: .trailing) {
+            // Visible affordance for the borderless panel's resize edge. Without
+            // this, users had no signal the card was draggable from the side
+            // (resize works on a borderless NSPanel via styleMask: .resizable,
+            // but the OS gives no chrome). Three thin tick marks inset from the
+            // edge cue "grab here"; the panel's own resize hit area handles the
+            // actual drag + cursor change.
+            ResizeGrip(color: colors.text.color.opacity(0.35))
+                .padding(.trailing, 4)
+                .allowsHitTesting(false)
+        }
         .opacity(fadedOut ? 0 : 1)
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now in
             updateSilenceFade(now: now)
@@ -310,5 +321,21 @@ struct AccentButtonStyle: ButtonStyle {
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(Capsule().fill(Palette.burningFlame.opacity(configuration.isPressed ? 0.75 : 1)))
+    }
+}
+
+/// Three-tick grab affordance hinted on the right edge of the caption card.
+/// Purely visual; the actual resize hit area is on the NSPanel (.resizable
+/// style mask), so we pass through hit testing and let the OS handle the drag.
+private struct ResizeGrip: View {
+    let color: Color
+    var body: some View {
+        VStack(spacing: 3) {
+            ForEach(0..<3, id: \.self) { _ in
+                Capsule()
+                    .fill(color)
+                    .frame(width: 2, height: 5)
+            }
+        }
     }
 }

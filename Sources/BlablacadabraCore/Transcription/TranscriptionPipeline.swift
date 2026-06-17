@@ -75,12 +75,12 @@ public actor TranscriptionPipeline: CaptionPipeline {
     /// LOCKED path leaves this false and pays a single decode. nil for partials.
     private let autoTranslateSource: Bool
 
-    /// Cached source language, used in translate mode only. The engine detects
-    /// ONCE (on the first final of the session) and reuses the result for every
-    /// later chunk: per-chunk detection flip-flops on short or ambiguous audio,
-    /// and re-running it every utterance is wasted latency. Reset when the task
-    /// or the locked language changes, so the next decode re-detects fresh.
-    private var lastLanguage: String?
+    /// Source-language stickiness gate (Plan B auto-detect). Re-detects on
+    /// every final and only flips when the proposed language clears confidence
+    /// + margin and survives a K-of-N streak. Originally cached the first
+    /// detection forever, which pinned the router to the first foreign
+    /// language and silently mistranslated every later one.
+    private var languageGate = LanguageStickinessGate()
 
     /// Optional tap on incoming audio (converted pipeline-format samples);
     /// feeds level meters and debug dumps without touching the caption stream.
@@ -132,14 +132,14 @@ public actor TranscriptionPipeline: CaptionPipeline {
         task = newTask
         // A fresh task re-detects from scratch (and turning translate off
         // clears the "from" language the status line was showing).
-        lastLanguage = nil
+        languageGate.reset()
     }
 
     /// Locks the spoken language (nil/empty = auto-detect). Applies mid-stream;
     /// clearing the cache so the new choice takes hold on the next chunk.
     public func setSpokenLanguage(_ code: String?) {
         spokenLanguage = (code?.isEmpty == true) ? nil : code
-        lastLanguage = nil
+        languageGate.reset()
     }
 
     public func setShowOriginal(_ show: Bool) {
@@ -375,20 +375,30 @@ public actor TranscriptionPipeline: CaptionPipeline {
     /// detection on ambiguous audio ("dah dah dah", humming) misfires and a
     /// cached wrong guess then forces every later English utterance into that
     /// language. Anyone captioning non-English without translating locks the
-    /// language explicitly. In translate-auto mode the first final detects and
-    /// caches; every later chunk reuses that. Partials never detect (a tiny
-    /// rolling partial is the least reliable moment to language-ID, and the
-    /// next final settles it anyway).
+    /// language explicitly. In translate-auto mode the gate re-detects on each
+    /// FINAL but only flips when the new language clears a confidence + margin
+    /// gate AND survives K-of-N consecutive agreements (the misfire stays
+    /// rejected; a sustained real switch goes through). Partials never detect
+    /// (a tiny rolling partial is the least reliable moment to language-ID, and
+    /// the next final settles it anyway) and reuse the gate's current value.
     private func resolvedLanguage(for samples: [Float], isFinal: Bool) async -> String? {
         if let spokenLanguage { return spokenLanguage }
         // Auto-detect runs while translating OR when feeding a translating decorator
         // in auto mode (Plan B); plain transcription assumes English (see above).
         guard task == .translate || autoTranslateSource else { return nil }
-        if let lastLanguage { return lastLanguage }
-        guard isFinal else { return nil }
+        // Partials inherit the gate's current value without consuming a slot in
+        // the K-of-N streak; only finals drive the gate.
+        guard isFinal else { return languageGate.current }
+        if let detection = (try? await engine.detectLanguageDetailed(samples)) ?? nil {
+            return languageGate.observe(detection)
+        }
+        // Engine doesn't expose probabilities (test fakes, future backends):
+        // fall back to single-shot adoption so behavior matches the legacy
+        // cache. The gate's reset() still clears it on task/lock changes.
+        if let cached = languageGate.current { return cached }
         let detected = (try? await engine.detectLanguage(samples)) ?? nil
-        if let detected { lastLanguage = detected }
-        return detected
+        if let detected { return languageGate.adoptIfEmpty(detected) }
+        return nil
     }
 
     private func finishIfDrained() {

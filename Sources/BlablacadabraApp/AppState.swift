@@ -490,6 +490,23 @@ final class AppState: ObservableObject {
 
     func startCaptions() {
         guard !isRunning else { return }
+        // Fire Mic + Speech TCC prompts concurrently up front, so the user sees
+        // every dialog in one batch the first time they press "Start captions"
+        // instead of staggered across sessions. Both calls are idempotent;
+        // already-granted returns immediately, denied is fine (Mic just keeps
+        // the user on the System-audio lane; Speech denial routes to Whisper).
+        // We do NOT await: launchSession's own resolveEngine flow still gates
+        // on the real answers; this just ensures the prompts FIRE early.
+        Task.detached(priority: .userInitiated) {
+            async let _mic: Bool = CapturePermissions.requestMicrophoneAccess()
+            async let _speech: Bool = {
+                if #available(macOS 26, *) {
+                    return await AppleSpeechPipeline.requestAuthorization()
+                }
+                return false
+            }()
+            _ = await (_mic, _speech)
+        }
         launchSession()
     }
 

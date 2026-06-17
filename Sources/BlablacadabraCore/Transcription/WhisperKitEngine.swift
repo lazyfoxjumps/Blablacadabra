@@ -116,10 +116,13 @@ public actor WhisperKitEngine: TranscriptionEngine {
         prepareHandler = handler
     }
 
-    /// Whether this model is already on disk (WhisperKit caches under
-    /// ~/Documents/huggingface). A missing or partial cache means `prepare()`
-    /// will download first, which can take minutes on the bigger models; the
-    /// UI uses this to say so instead of a vague "warming up".
+    /// Whether this model is already on disk. Weights live under
+    /// `~/Library/Application Support/Blablacadabra/huggingface/` (NOT
+    /// `~/Documents`, where WhisperKit defaults; putting model blobs in a
+    /// user-facing folder triggers macOS's Documents-access TCC prompt for no
+    /// good reason). A missing or partial cache means `prepare()` will download
+    /// first, which can take minutes on the bigger models; the UI uses this to
+    /// say so instead of a vague "warming up".
     public static func isModelCached(_ model: String) -> Bool {
         guard let modelDir = cachedModelFolder(model) else { return false }
         // The decoder weights land last; their compiled model is the
@@ -128,11 +131,20 @@ public actor WhisperKitEngine: TranscriptionEngine {
         return FileManager.default.fileExists(atPath: decoder.path)
     }
 
+    /// Base directory we hand to WhisperKit's downloader. WhisperKit / HubApi
+    /// appends `/models/<repo>/<variant>` under this URL, so the structure
+    /// mirrors the old `~/Documents/huggingface/...` layout, just under
+    /// Application Support where model blobs belong.
+    static func cacheBase() -> URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Blablacadabra/huggingface", isDirectory: true)
+    }
+
     static func cachedModelFolder(_ model: String) -> URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-            .appendingPathComponent(
-                "huggingface/models/argmaxinc/whisperkit-coreml/openai_whisper-\(model)"
-            )
+        cacheBase()?.appendingPathComponent(
+            "models/argmaxinc/whisperkit-coreml/openai_whisper-\(model)",
+            isDirectory: true
+        )
     }
 
     public func prepare() async throws {
@@ -145,7 +157,10 @@ public actor WhisperKitEngine: TranscriptionEngine {
         if modelFolder == nil {
             handler?(.downloading(0))
             do {
-                modelFolder = try await WhisperKit.download(variant: model) { progress in
+                modelFolder = try await WhisperKit.download(
+                    variant: model,
+                    downloadBase: Self.cacheBase()
+                ) { progress in
                     handler?(.downloading(progress.fractionCompleted))
                 }
             } catch {
@@ -247,11 +262,22 @@ public actor WhisperKitEngine: TranscriptionEngine {
     /// Dedicated language detection (single forward pass, no full decode),
     /// so the translate path can label the real source language.
     public func detectLanguage(_ samples: [Float]) async throws -> String? {
+        try await detectLanguageDetailed(samples)?.language
+    }
+
+    public func detectLanguageDetailed(_ samples: [Float]) async throws -> LanguageDetection? {
         guard let whisper else { throw TranscriptionError.engineNotPrepared }
         guard samples.count >= Int(AudioPipelineFormat.sampleRate / 10) else { return nil }
         // WhisperKit's method name carries an upstream typo ("Langauge").
         let result = try await whisper.detectLangauge(audioArray: samples)
-        return result.language
+        // WhisperKit's `langProbs` are LOG-probabilities (from the sampler's
+        // logProbs at the predicted-language token), and the dict only contains
+        // languages whose tokens were sampled (frequently just the top-1).
+        // Convert to LINEAR probabilities at this boundary so the gate works in
+        // the [0,1] space everyone reasons about; absent languages stay absent
+        // (the gate treats absence as 0, the correct linear sentinel).
+        let linear = result.langProbs.mapValues { Foundation.exp($0) }
+        return LanguageDetection(language: result.language, probabilities: linear)
     }
 
     /// Whisper opens chunks that start mid-conversation with a dialog dash
