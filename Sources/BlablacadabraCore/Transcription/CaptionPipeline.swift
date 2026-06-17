@@ -86,6 +86,24 @@ public enum CaptionEngineKind: Equatable, Sendable {
         guard authorized, localeSupported else { return .whisper }
         return .appleTranscribe
     }
+
+    /// Whether a session on this engine kind may be asked to run Whisper's audio
+    /// `.translate` task (so the chosen model MUST be one that can audio-translate).
+    /// - `.whisper` + translate: the transcriber runs `.translate` directly.
+    /// - `.whisperAppleTranslate` UNLOCKED: the inner carries a Whisper audio-translate
+    ///   fallback per line (for languages Apple's text translator can't serve), so the
+    ///   transcriber audio-translates too.
+    /// - `.whisperAppleTranslate` LOCKED: Apple text-translates the transcribed source;
+    ///   Whisper only transcribes, so any model is safe.
+    /// - `.appleTranscribe` / translate off: never audio-translates.
+    public func needsAudioTranslate(translate: Bool, locked: Bool) -> Bool {
+        guard translate else { return false }
+        switch self {
+        case .whisper: return true
+        case .whisperAppleTranslate: return !locked
+        case .appleTranscribe: return false
+        }
+    }
 }
 
 public protocol CaptionPipeline: Actor, Sendable {
