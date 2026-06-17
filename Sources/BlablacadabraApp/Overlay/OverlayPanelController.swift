@@ -60,6 +60,8 @@ final class OverlayPanelController: NSObject, NSWindowDelegate {
             self?.state.overlayWidth = Double(clamped)
         }
 
+        installResizeEdges()
+
         if panel.frame.origin == .zero, let screen = NSScreen.main {
             // First launch: bottom-center, clear of the Dock.
             let frame = screen.visibleFrame
@@ -90,6 +92,39 @@ final class OverlayPanelController: NSObject, NSWindowDelegate {
             if state.overlayWidth != width { state.overlayWidth = width }
             return NSSize(width: width, height: sender.frame.height)
         }
+    }
+
+    /// Adds the two invisible edge-resize strips over the SwiftUI content,
+    /// pinned to the left and right edges so they track every width change. They
+    /// drive the same `overlayResizeHandler` the panel already uses, so the
+    /// resize math (clamp + origin shift) stays in one place.
+    private func installResizeEdges() {
+        guard let content = panel.contentView else { return }
+        let stripWidth: CGFloat = 10
+        let minWidth = CGFloat(AppState.overlayMinWidth)
+
+        let left = ResizeEdgeView(edge: .left, minWidth: minWidth) { [weak self] newWidth, anchorRight in
+            self?.state.overlayResizeHandler?(newWidth, anchorRight)
+        }
+        let right = ResizeEdgeView(edge: .right, minWidth: minWidth) { [weak self] newWidth, anchorRight in
+            self?.state.overlayResizeHandler?(newWidth, anchorRight)
+        }
+
+        // Auto Layout (not autoresizing): the panel resizes via preferredContentSize
+        // after init, and a proportional autoresizing mask off a possibly-zero
+        // initial height would leave the strip zero-height. Constraints pin them
+        // full-height to the content edges no matter when layout settles.
+        for strip in [left, right] {
+            strip.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(strip)
+            NSLayoutConstraint.activate([
+                strip.topAnchor.constraint(equalTo: content.topAnchor),
+                strip.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+                strip.widthAnchor.constraint(equalToConstant: stripWidth),
+            ])
+        }
+        left.leadingAnchor.constraint(equalTo: content.leadingAnchor).isActive = true
+        right.trailingAnchor.constraint(equalTo: content.trailingAnchor).isActive = true
     }
 
     func resetPosition() {
