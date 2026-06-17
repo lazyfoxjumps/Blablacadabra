@@ -328,6 +328,14 @@ final class AppState: ObservableObject {
     }
     /// The smallest the caption card may be sized to (its original fixed width).
     static let overlayMinWidth: Double = 600
+
+    /// Bridge from the SwiftUI corner-resize handles to the NSPanel-owning
+    /// controller. Set by `OverlayPanelController` on init. The handles pass
+    /// the new desired width AND whether the right edge should stay anchored
+    /// (a left-corner drag must shift the panel's origin so the right edge
+    /// doesn't slide; a right-corner drag keeps origin fixed and grows out).
+    /// Nil before the controller exists or in unit tests.
+    var overlayResizeHandler: ((CGFloat, Bool) -> Void)?
     @Published var calmMode: Bool {
         didSet { defaults.set(calmMode, forKey: "calmMode") }
     }

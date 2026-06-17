@@ -40,6 +40,26 @@ final class OverlayPanelController: NSObject, NSWindowDelegate {
         super.init()
         panel.delegate = self
 
+        // Wire the SwiftUI corner grippers' resize callback to this panel. The
+        // grippers compute the desired width from their drag delta; we apply it
+        // here so we can also shift the panel's origin when a LEFT corner is
+        // the anchor (right edge stays put, left edge moves outward), matching
+        // Canva-style stretch-from-corner behavior.
+        state.overlayResizeHandler = { [weak self, weak panel] newWidth, anchorRight in
+            guard let panel else { return }
+            let clamped = max(CGFloat(AppState.overlayMinWidth), newWidth)
+            var frame = panel.frame
+            if anchorRight {
+                frame.size.width = clamped
+            } else {
+                let delta = clamped - frame.size.width
+                frame.origin.x -= delta
+                frame.size.width = clamped
+            }
+            panel.setFrame(frame, display: true, animate: false)
+            self?.state.overlayWidth = Double(clamped)
+        }
+
         if panel.frame.origin == .zero, let screen = NSScreen.main {
             // First launch: bottom-center, clear of the Dock.
             let frame = screen.visibleFrame

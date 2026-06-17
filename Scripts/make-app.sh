@@ -86,5 +86,13 @@ if [ -x "$LSREGISTER" ]; then
   "$LSREGISTER" -f "$APP" >/dev/null 2>&1 || true
 fi
 
+# Bust the per-user IconServices cache too. ScreenCaptureKit's content-sharing
+# picker (and several other system dialogs) render icons via a separate daemon
+# from Finder/Dock, and that daemon caches by bundle path. After an ad-hoc
+# re-sign the cache still serves the old (often blank) icon until the agent
+# is restarted. launchd respawns it on demand, so no service interruption.
+killall iconservicesagent 2>/dev/null || true
+killall iconservicesd 2>/dev/null || true
+
 echo "Done: $APP"
 echo "First launch: right-click > Open (ad-hoc signed, Gatekeeper will ask once)."

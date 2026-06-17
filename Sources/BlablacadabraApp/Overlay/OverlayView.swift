@@ -32,17 +32,10 @@ struct OverlayView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(colors.background.color.opacity(state.effectiveOverlayOpacity))
         )
-        .overlay(alignment: .trailing) {
-            // Visible affordance for the borderless panel's resize edge. Without
-            // this, users had no signal the card was draggable from the side
-            // (resize works on a borderless NSPanel via styleMask: .resizable,
-            // but the OS gives no chrome). Three thin tick marks inset from the
-            // edge cue "grab here"; the panel's own resize hit area handles the
-            // actual drag + cursor change.
-            ResizeGrip(color: colors.text.color.opacity(0.35))
-                .padding(.trailing, 4)
-                .allowsHitTesting(false)
-        }
+        .overlay(alignment: .topLeading)     { CornerHandle(state: state, side: .leftAnchored, corner: .topLeading) }
+        .overlay(alignment: .topTrailing)    { CornerHandle(state: state, side: .rightAnchored, corner: .topTrailing) }
+        .overlay(alignment: .bottomLeading)  { CornerHandle(state: state, side: .leftAnchored, corner: .bottomLeading) }
+        .overlay(alignment: .bottomTrailing) { CornerHandle(state: state, side: .rightAnchored, corner: .bottomTrailing) }
         .opacity(fadedOut ? 0 : 1)
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now in
             updateSilenceFade(now: now)
@@ -324,18 +317,75 @@ struct AccentButtonStyle: ButtonStyle {
     }
 }
 
-/// Three-tick grab affordance hinted on the right edge of the caption card.
-/// Purely visual; the actual resize hit area is on the NSPanel (.resizable
-/// style mask), so we pass through hit testing and let the OS handle the drag.
-private struct ResizeGrip: View {
-    let color: Color
+/// Canva-style corner resize handle. Renders a small L-shaped bracket aligned
+/// with one corner, intercepts mouseDown (so `isMovableByWindowBackground`
+/// can't eat it), and translates a global drag into a resize via the panel
+/// controller bridge (`AppState.overlayResizeHandler`). The card auto-hugs
+/// height so all four corners do horizontal resize; left corners shift the
+/// panel's origin so the right edge stays put, right corners grow rightward.
+private struct CornerHandle: View {
+    enum Side { case leftAnchored, rightAnchored }
+    enum Corner { case topLeading, topTrailing, bottomLeading, bottomTrailing }
+
+    @ObservedObject var state: AppState
+    let side: Side
+    let corner: Corner
+
+    @State private var dragStartWidth: CGFloat?
+
+    private static let hitSize: CGFloat = 18
+    private static let armLength: CGFloat = 10
+    private static let armThickness: CGFloat = 1.5
+
     var body: some View {
-        VStack(spacing: 3) {
-            ForEach(0..<3, id: \.self) { _ in
-                Capsule()
-                    .fill(color)
-                    .frame(width: 2, height: 5)
+        let stroke = state.captionColors.text.color.opacity(0.45)
+        ZStack {
+            Path { path in
+                // Two segments meeting at the corner of the hit square.
+                switch corner {
+                case .topLeading:
+                    path.move(to: CGPoint(x: 0, y: Self.armLength))
+                    path.addLine(to: .zero)
+                    path.addLine(to: CGPoint(x: Self.armLength, y: 0))
+                case .topTrailing:
+                    path.move(to: CGPoint(x: Self.hitSize - Self.armLength, y: 0))
+                    path.addLine(to: CGPoint(x: Self.hitSize, y: 0))
+                    path.addLine(to: CGPoint(x: Self.hitSize, y: Self.armLength))
+                case .bottomLeading:
+                    path.move(to: CGPoint(x: 0, y: Self.hitSize - Self.armLength))
+                    path.addLine(to: CGPoint(x: 0, y: Self.hitSize))
+                    path.addLine(to: CGPoint(x: Self.armLength, y: Self.hitSize))
+                case .bottomTrailing:
+                    path.move(to: CGPoint(x: Self.hitSize - Self.armLength, y: Self.hitSize))
+                    path.addLine(to: CGPoint(x: Self.hitSize, y: Self.hitSize))
+                    path.addLine(to: CGPoint(x: Self.hitSize, y: Self.hitSize - Self.armLength))
+                }
+            }
+            .stroke(stroke, style: StrokeStyle(lineWidth: Self.armThickness, lineCap: .round))
+        }
+        .frame(width: Self.hitSize, height: Self.hitSize)
+        // contentShape MUST cover the whole frame so the mouseDown lands here
+        // instead of falling through to `isMovableByWindowBackground` which
+        // would otherwise eat every click on the panel surface.
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering {
+                NSCursor.resizeLeftRight.push()
+            } else {
+                NSCursor.pop()
             }
         }
+        .gesture(
+            DragGesture(coordinateSpace: .global)
+                .onChanged { value in
+                    if dragStartWidth == nil { dragStartWidth = CGFloat(state.overlayWidth) }
+                    guard let start = dragStartWidth else { return }
+                    let dx = value.location.x - value.startLocation.x
+                    let widthDelta = (side == .leftAnchored) ? -dx : dx
+                    let newWidth = max(CGFloat(AppState.overlayMinWidth), start + widthDelta)
+                    state.overlayResizeHandler?(newWidth, side == .rightAnchored)
+                }
+                .onEnded { _ in dragStartWidth = nil }
+        )
     }
 }
