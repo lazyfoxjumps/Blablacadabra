@@ -707,7 +707,20 @@ final class AppState: ObservableObject {
                         let engine = self.engine(for: config.origin)
                         await attachWhisperProgress(engine, laneIndex: laneIndex)
                         let locked = (self.spokenLanguageCode?.isEmpty == false)
-                        let lockedISO = locked
+                        // Two codes, deliberately kept separate:
+                        //  - whisperCode: the RAW picker code Whisper expects (its
+                        //    own language set, e.g. "no"/"tl"/"jw"). Feed this to
+                        //    the inner transcriber UNCHANGED.
+                        //  - appleISO: the same language as Apple's Translation
+                        //    framework names it, via Locale normalization (e.g.
+                        //    "no"->"nb", "tl"->"fil", "jw"->"jv"). Feed this to the
+                        //    Apple translator + the event source tag.
+                        // They diverge for exactly those three languages; round-
+                        // tripping Whisper's code through Locale (the old bug) handed
+                        // Whisper a code it doesn't know, so it silently auto-detected
+                        // and a locked language came out as something else entirely.
+                        let whisperCode = locked ? self.spokenLanguageCode : nil
+                        let appleISO = locked
                             ? AppleSpeechLocale.isoCode(for: AppleSpeechLocale.resolved(
                                 spokenLanguage: self.spokenLanguageCode,
                                 englishLocale: self.captionLocale))
@@ -722,19 +735,19 @@ final class AppState: ObservableObject {
                             source: config.source,
                             engine: engine,
                             task: .transcribe,
-                            spokenLanguage: lockedISO,
+                            spokenLanguage: whisperCode,
                             showOriginal: false,
                             inputGain: Float(self.inputGain),
                             speakerIdentifier: self.activeSpeakerIdentifier(for: config.origin),
                             autoTranslateSource: !locked
                         )
                         let translator: any TextTranslating = locked
-                            ? AppleTranslationService(sourceISOCode: lockedISO ?? "en")
+                            ? AppleTranslationService(sourceISOCode: appleISO ?? "en")
                             : TranslationRouter()
                         pipeline = TranslatingPipeline(
                             inner: inner,
                             translator: translator,
-                            sourceISO: lockedISO,
+                            sourceISO: appleISO,
                             showOriginal: self.showOriginal
                         )
 

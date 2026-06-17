@@ -129,3 +129,38 @@ import Testing
         #expect(!fm.fileExists(atPath: new.path))
     }
 }
+
+@Suite struct SpokenLanguageCodeTests {
+    /// Every code the picker offers must be one WhisperKit recognizes. An
+    /// unknown code isn't rejected by Whisper — it silently auto-detects, so a
+    /// "locked" language quietly becomes the wrong one. This guards against a
+    /// future picker addition (or typo) reintroducing that class of bug.
+    @Test func everyPickerCodeIsAWhisperLanguage() {
+        let supported = WhisperKitEngine.supportedLanguageCodes
+        for entry in SpokenLanguage.pickerList {
+            #expect(supported.contains(entry.code), "picker code '\(entry.code)' (\(entry.name)) is not a WhisperKit language")
+        }
+    }
+
+    /// Documents the three codes where Foundation's Locale normalizes AWAY from
+    /// Whisper's code (no->nb, tl->fil, jw->jv). The translate+locked path must
+    /// feed Whisper the RAW picker code, never the Locale-normalized one, or
+    /// these three lock to the wrong language. If Foundation ever stops
+    /// normalizing these, this test tells us the divergence (and its special-
+    /// casing) is no longer needed.
+    @Test func localeNormalizesExactlyTheKnownDivergentCodes() {
+        let divergent = SpokenLanguage.pickerList
+            .map(\.code)
+            .filter { code in
+                let round = Locale(identifier: code).language.languageCode?.identifier
+                return round != code
+            }
+            .sorted()
+        #expect(divergent == ["jw", "no", "tl"])
+        // And the normalized forms are NOT Whisper codes (the heart of the bug).
+        let supported = WhisperKitEngine.supportedLanguageCodes
+        #expect(!supported.contains("nb"))
+        #expect(!supported.contains("fil"))
+        #expect(!supported.contains("jv"))
+    }
+}

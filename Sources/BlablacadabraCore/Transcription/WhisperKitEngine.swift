@@ -20,6 +20,13 @@ public actor WhisperKitEngine: TranscriptionEngine {
     public static let availableModels = ["tiny", "small", "medium", turboModel]
     public static let defaultModel = "small"
 
+    /// WhisperKit's full set of recognized source-language codes. Surfaced so
+    /// callers can verify a locked code is one Whisper actually honors: an
+    /// UNKNOWN code is not an error, Whisper just silently falls back to
+    /// auto-detection, so a locked language can come out as the wrong one. Used
+    /// by `SpokenLanguageCodeTests` to guarantee every picker code is valid.
+    public static var supportedLanguageCodes: Set<String> { Constants.languageCodes }
+
     /// The largest model that CAN audio-translate. Used as the safe substitute when
     /// a translate session would otherwise route to Turbo's audio-translate (which is
     /// a no-op, see `canAudioTranslate`). Mirrors `turboModel` as a single source of
