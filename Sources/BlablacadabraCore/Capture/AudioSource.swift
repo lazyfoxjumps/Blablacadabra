@@ -33,6 +33,7 @@ public enum AudioCaptureError: LocalizedError {
     case noDisplayFound
     case alreadyRunning
     case converterSetupFailed
+    case deviceBindFailed(OSStatus)
 
     public var errorDescription: String? {
         switch self {
@@ -44,6 +45,8 @@ public enum AudioCaptureError: LocalizedError {
             return "Capture is already running."
         case .converterSetupFailed:
             return "Could not set up audio format conversion."
+        case .deviceBindFailed(let status):
+            return "Could not bind to the selected input device (OSStatus \(status))."
         }
     }
 }

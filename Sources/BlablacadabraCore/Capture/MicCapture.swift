@@ -61,32 +61,43 @@ public final class MicCapture: AudioSource {
     private func startEngineLocked() throws {
         let engine = AVAudioEngine()
         let input = engine.inputNode
-        // Bind a specific input device if the user picked one. Must happen
-        // before reading the input format / starting, on the inputNode's
-        // underlying audio unit. A missing uid silently leaves the default in
+        // Bind a specific input device if the user picked one. Use the v3
+        // AUAudioUnit deviceID setter, NOT the v2 kAudioOutputUnitProperty_
+        // CurrentDevice property: AVAudioEngine owns this unit's lifecycle and
+        // tracks the v3 unit, so setDeviceID refreshes the engine's cached
+        // input format to the new device. Poking the v2 audio unit directly
+        // (with or without an uninit/init dance) does NOT refresh that cache —
+        // the tap then reads the OLD device's format and yields silence, and
+        // manually toggling the v2 unit's init state can desync the engine so
+        // the tap never fires at all (both live-confirmed 2026-06-17: EarPods
+        // and built-in mic went flat). A missing uid leaves the default in
         // place (graceful fallback).
         if let uid = preferredDeviceUID,
-           let deviceID = AudioDevices.deviceID(forUID: uid),
-           let unit = input.audioUnit {
-            var device = deviceID
-            AudioUnitSetProperty(
-                unit,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &device,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
+           let deviceID = AudioDevices.deviceID(forUID: uid) {
+            do {
+                try input.auAudioUnit.setDeviceID(deviceID)
+            } catch {
+                throw AudioCaptureError.deviceBindFailed(OSStatus((error as NSError).code))
+            }
         }
         let nativeFormat = input.inputFormat(forBus: 0)
-        guard nativeFormat.sampleRate > 0,
-              let converter = PipelineFormatConverter(from: nativeFormat) else {
+        guard nativeFormat.sampleRate > 0 else {
             throw AudioCaptureError.converterSetupFailed
         }
 
+        // Build the converter from the format the tap ACTUALLY delivers, not
+        // from inputFormat(forBus:): right after a device switch the two can
+        // still disagree for a beat, and resampling from the wrong rate yields
+        // silence. Rebuild if the hardware format changes mid-stream. Only the
+        // tap's (serial) render thread touches `converter`, so the bare var is
+        // safe.
+        var converter: PipelineFormatConverter?
         input.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { [weak self] buffer, _ in
             guard let self else { return }
-            guard let converted = converter.convert(buffer) else { return }
+            if converter == nil || converter?.inputFormat != buffer.format {
+                converter = PipelineFormatConverter(from: buffer.format)
+            }
+            guard let converted = converter?.convert(buffer) else { return }
             self.queue.async { self.continuation?.yield(converted) }
         }
 
@@ -118,6 +129,16 @@ public final class MicCapture: AudioSource {
     private func handleConfigurationChangeLocked(of changed: AVAudioEngine) {
         // Stale notification for an engine we already replaced or stopped.
         guard running, engine === changed else { return }
+        // Ignore the benign echo we cause ourselves: binding the chosen device
+        // via setDeviceID posts this notification (delivered async, after the
+        // observer is registered), but the engine keeps running and the tap is
+        // intact — rebuilding here would re-set the device, post another change,
+        // and churn until a transient start failure kills the stream (live:
+        // explicit EarPods captured ONE buffer then went flat, 2026-06-17). The
+        // lazy converter already adapts to any live format drift. Only rebuild
+        // when the engine actually STOPPED — the real "default device went away"
+        // case this handler exists for.
+        guard !changed.isRunning else { return }
         tearDownEngineLocked()
         do {
             // The new default input may need a beat to come up; one retry
