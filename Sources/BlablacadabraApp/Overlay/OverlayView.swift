@@ -27,7 +27,7 @@ struct OverlayView: View {
             }
         }
         .padding(16)
-        .frame(width: max(AppState.overlayMinWidth, state.overlayWidth), alignment: .leading)
+        .frame(width: AppState.overlayWidth, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(colors.background.color.opacity(state.effectiveOverlayOpacity))

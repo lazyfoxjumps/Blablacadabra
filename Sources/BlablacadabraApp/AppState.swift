@@ -320,22 +320,11 @@ final class AppState: ObservableObject {
     @Published var overlayOpacity: Double {
         didSet { defaults.set(overlayOpacity, forKey: "overlayOpacity") }
     }
-    /// User-set width of the caption card. The card is resizable by dragging its
-    /// edge; height always hugs the content. Never goes below `overlayMinWidth`
-    /// (the original fixed size, the smallest it's allowed to get).
-    @Published var overlayWidth: Double {
-        didSet { defaults.set(overlayWidth, forKey: "overlayWidth") }
-    }
-    /// The smallest the caption card may be sized to (its original fixed width).
-    static let overlayMinWidth: Double = 600
+    /// The caption card's fixed width. User-resize was tried (draggable edges)
+    /// and shelved: a borderless always-on-top NSPanel fights the OS resize
+    /// machinery too hard to feel reliable, so the card stays this one size.
+    static let overlayWidth: Double = 600
 
-    /// Bridge from the SwiftUI corner-resize handles to the NSPanel-owning
-    /// controller. Set by `OverlayPanelController` on init. The handles pass
-    /// the new desired width AND whether the right edge should stay anchored
-    /// (a left-corner drag must shift the panel's origin so the right edge
-    /// doesn't slide; a right-corner drag keeps origin fixed and grows out).
-    /// Nil before the controller exists or in unit tests.
-    var overlayResizeHandler: ((CGFloat, Bool) -> Void)?
     @Published var calmMode: Bool {
         didSet { defaults.set(calmMode, forKey: "calmMode") }
     }
@@ -432,7 +421,9 @@ final class AppState: ObservableObject {
         fontSize = defaults.object(forKey: "fontSize") as? Double ?? 21
         previousLines = defaults.object(forKey: "previousLines") as? Int ?? 2
         overlayOpacity = defaults.object(forKey: "overlayOpacity") as? Double ?? 0.9
-        overlayWidth = max(AppState.overlayMinWidth, defaults.object(forKey: "overlayWidth") as? Double ?? AppState.overlayMinWidth)
+        // Resize was shelved; drop any width a previous build persisted so the
+        // card returns to its original fixed size.
+        defaults.removeObject(forKey: "overlayWidth")
         calmMode = defaults.bool(forKey: "calmMode")
         // Default ON for the multi-voice sources (System/Both), off for mic-only
         // (one person). Read the source from defaults again (can't touch
