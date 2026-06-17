@@ -110,9 +110,11 @@ struct OverlayView: View {
 
     @ViewBuilder
     private func captions(textColor: RGB) -> some View {
-        // The current line is the live partial (English only, no original yet)
-        // or, when nothing is being spoken, the last committed line. A partial
-        // inherits the previous line's speaker (its own label lands on finalize).
+        // The current line is the live partial or, when nothing is being spoken,
+        // the last committed line. The partial is the translated English in
+        // monolingual translate, or the untranslated SOURCE text in bilingual mode
+        // (the original leads live; the English headline arrives on finalize). A
+        // partial inherits the previous line's speaker (its label lands on finalize).
         let current: CaptionLine? = state.partial.map {
             CaptionLine(
                 text: $0, original: nil, origin: state.partialOrigin,

@@ -201,15 +201,25 @@ struct SettingsView: View {
                 .foregroundStyle(theme.secondaryText)
             PillPicker(
                 selection: $state.expectedSpeakerCount,
-                options: [(0, "Auto"), (2, "2"), (3, "3"), (4, "4"), (5, "5+")],
+                options: [(0, "Auto"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5+")],
                 theme: theme
             )
-            Text(state.expectedSpeakerCount == 0
-                ? "I'll figure out how many voices there are. Best if you're not sure."
-                : "I'll expect \(state.expectedSpeakerCount) and keep each voice steady. Pick the exact number for the cleanest result.")
+            Text(speakerCountHint)
                 .font(AppFont.footnote)
                 .foregroundStyle(theme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Helper copy under the speaker-count picker, tailored per choice.
+    private var speakerCountHint: String {
+        switch state.expectedSpeakerCount {
+        case 0:
+            return "I'll figure out how many voices there are. Best if you're not sure."
+        case 1:
+            return "Just you. Every line stays S1, no splitting into S2/S3."
+        default:
+            return "I'll expect \(state.expectedSpeakerCount) and keep each voice steady. Pick the exact number for the cleanest result."
         }
     }
 

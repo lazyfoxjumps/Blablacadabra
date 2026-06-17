@@ -124,6 +124,33 @@ private actor ScriptedPipeline: CaptionPipeline {
         ])
     }
 
+    @Test func bilingualPartialLeadsWithOriginalAndSkipsTranslation() async throws {
+        // Bilingual mode: the live partial shows the SOURCE text untranslated so the
+        // original leads the caption with zero translation lag; the English headline
+        // arrives only on the final (with the original kept above it). The translator
+        // must never be asked to translate a partial.
+        let inner = ScriptedPipeline([
+            .partial("sal", language: "ar"),
+            .final("salam", speaker: .speaker(1)),
+        ])
+        let translator = FakeTranslator()
+        let pipeline = TranslatingPipeline(
+            inner: inner,
+            translator: translator,
+            sourceISO: "ar",
+            showOriginal: true
+        )
+
+        let out = try await collect(pipeline)
+
+        #expect(out == [
+            .partial("sal", language: "ar"),
+            .final("EN(salam)", original: "salam", language: "ar", speaker: .speaker(1)),
+        ])
+        // Only the final was translated; the partial rode through as the source.
+        #expect(await translator.seenInputs == ["salam"])
+    }
+
     @Test func autoPathRoutesByPerLineDetectedLanguage() async throws {
         // The inner (auto mode) tags each final with the detected source language and
         // carries a Whisper audio-translate fallback in `original`. The decorator

@@ -168,6 +168,15 @@ public actor TranslatingPipeline: CaptionPipeline {
         } else if let partial = pendingPartial {
             pendingPartial = nil
             let from = partial.language ?? sourceISO
+            // Bilingual: the ORIGINAL leads the live caption. Emit the source text
+            // instantly with no translation lag, so the user sees what's being spoken
+            // as they speak; the English headline lands when the line finalizes (the
+            // final still carries the original above it). Also skips a per-partial
+            // translation call. Monolingual translate keeps the live English partial.
+            if showOriginal {
+                yieldCaption(.partial(partial.text, language: from))
+                return
+            }
             translating = true
             Task {
                 // Partials have no fallback (kept cheap); a miss just shows nothing
