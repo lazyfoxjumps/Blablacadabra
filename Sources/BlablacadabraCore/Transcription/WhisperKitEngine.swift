@@ -204,6 +204,17 @@ public actor WhisperKitEngine: TranscriptionEngine {
 
     public func transcribe(_ samples: [Float], task: TranscriptionTask, language: String?) async throws -> TranscriptionOutput {
         guard let whisper else { throw TranscriptionError.engineNotPrepared }
+        // Structural guard for the Turbo blank-English blocker: Turbo's audio
+        // `.translate` task is a no-op (see `canAudioTranslate`). The only thing
+        // keeping a translate session off Turbo is `AppState.effectiveModel`'s
+        // swap, enforced by convention at one call site. If any future call site
+        // ever builds this engine on a non-capable model and asks it to
+        // translate, fail loudly in debug/tests rather than silently emitting
+        // blank English. (Covered by `TranslateModelSweepTests`.)
+        assert(
+            task != .translate || Self.canAudioTranslate(model),
+            "audio .translate requested on '\(model)', which can't audio-translate"
+        )
         // Whisper pads to its 30s window internally, but sub-0.1s blips only
         // produce hallucinations; the VAD already drops most of these.
         guard samples.count >= Int(AudioPipelineFormat.sampleRate / 10) else { return .empty }
