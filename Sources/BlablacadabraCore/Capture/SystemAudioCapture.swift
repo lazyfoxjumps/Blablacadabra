@@ -8,6 +8,11 @@ import ScreenCaptureKit
 ///
 /// Requires Screen Recording permission; see `CapturePermissions`.
 public final class SystemAudioCapture: NSObject, AudioSource {
+    // `stream`, `continuation`, and `converter` are touched from the audio
+    // sample-handler callback (on `sampleQueue`), from `start()`/`stop()` (the
+    // caller's thread), and from the `didStopWithError` delegate callback (an
+    // internal SCStream queue). All access is confined to `sampleQueue` so those
+    // threads never race on them — mirrors how `MicCapture` serializes its state.
     private var stream: SCStream?
     private var continuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var converter: PipelineFormatConverter?
@@ -18,7 +23,9 @@ public final class SystemAudioCapture: NSObject, AudioSource {
     }
 
     public func start() async throws -> AsyncStream<AVAudioPCMBuffer> {
-        guard stream == nil else { throw AudioCaptureError.alreadyRunning }
+        guard sampleQueue.sync(execute: { self.stream == nil }) else {
+            throw AudioCaptureError.alreadyRunning
+        }
 
         // SCShareableContent.current is also the permission gate: it throws
         // if Screen Recording access is missing.
@@ -47,10 +54,10 @@ public final class SystemAudioCapture: NSObject, AudioSource {
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
         try await stream.startCapture()
-        self.stream = stream
+        sampleQueue.sync { self.stream = stream }
 
         return AsyncStream { continuation in
-            self.continuation = continuation
+            sampleQueue.sync { self.continuation = continuation }
             continuation.onTermination = { [weak self] _ in
                 // Consumer walked away (task cancelled, loop broken): tear down
                 // capture rather than yielding into the void.
@@ -61,12 +68,22 @@ public final class SystemAudioCapture: NSObject, AudioSource {
     }
 
     public func stop() async {
+        // Claim the stream on `sampleQueue` so a concurrent stop / didStopWithError
+        // can't double-stop or race the teardown.
+        let stream: SCStream? = sampleQueue.sync {
+            let s = self.stream
+            self.stream = nil
+            return s
+        }
         guard let stream else { return }
-        self.stream = nil
+        // stopCapture is async, so it can't run inside the sync block; once it
+        // returns no more sample callbacks fire, then we finish the stream.
         try? await stream.stopCapture()
-        converter = nil
-        continuation?.finish()
-        continuation = nil
+        sampleQueue.sync {
+            self.converter = nil
+            self.continuation?.finish()
+            self.continuation = nil
+        }
     }
 }
 
@@ -98,10 +115,14 @@ extension SystemAudioCapture: SCStreamOutput, SCStreamDelegate {
     }
 
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
-        // Display change, permission revoked mid-stream, etc.
-        self.stream = nil
-        converter = nil
-        continuation?.finish()
-        continuation = nil
+        // Display change, permission revoked mid-stream, etc. This delegate
+        // callback arrives on SCStream's internal queue, so hop onto sampleQueue
+        // to tear down without racing the sample callback or stop().
+        sampleQueue.async {
+            self.stream = nil
+            self.converter = nil
+            self.continuation?.finish()
+            self.continuation = nil
+        }
     }
 }
