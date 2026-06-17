@@ -14,12 +14,16 @@ import Testing
     @Test func defaultPolicyMapsDenylistToWhisper() {
         guard #available(macOS 26, *) else { return }
         let table = TranslationRouter.defaultPolicy
-        // Every denylisted source is steered to the Whisper fallback...
+        // Every denylisted source is steered to the Whisper fallback (the set is
+        // currently empty, so this is vacuous; the .whisper mechanism is covered
+        // by explicitWhisperPolicyOverridesAuto).
         for iso in CaptionEngineKind.appleTranslateDenylist {
             #expect(table[iso] == .whisper)
         }
-        // ...and a non-denylisted language has no override (defaults to .auto).
+        // A non-denylisted language has no override (defaults to .auto). id is no
+        // longer denylisted, so it too defaults to .auto (Apple where installed).
         #expect(table["ja"] == nil)
+        #expect(table["id"] == nil)
     }
 
     @Test func returnsNilForEmptyOrUnknownSource() async {
@@ -39,9 +43,11 @@ import Testing
 
     @Test func denylistedLanguageReturnsNilWithoutTouchingApple() async {
         guard #available(macOS 26, *) else { return }
-        // `id` is denylisted (policy .whisper): the router returns nil so the caller
-        // uses the Whisper fallback, and it does so WITHOUT probing the install state.
-        let router = TranslationRouter()
+        // A policy `.whisper` language: the router returns nil so the caller uses the
+        // Whisper fallback, and it does so WITHOUT probing the install state. The
+        // production denylist is empty now, so this injects one to test the
+        // short-circuit (id itself is no longer steered here).
+        let router = TranslationRouter(policy: ["id": .whisper])
         #expect(await router.translate("apa kabar", from: "id") == nil)
     }
 

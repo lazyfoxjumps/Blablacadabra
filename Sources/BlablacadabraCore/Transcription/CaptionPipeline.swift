@@ -32,10 +32,21 @@ public enum CaptionEngineKind: Equatable, Sendable {
 
     /// Source languages (ISO 639-1) whose Apple `Translation` quality we judge
     /// worse than WhisperKit's, so we keep them on Whisper's audio-translate even
-    /// when Apple's pack is installed. `id` (Indonesian): Apple's on-device model
-    /// leans Malay; Whisper's id->en reads truer. Transcribe-only (`appleTranscribe`)
-    /// is unaffected — this only steers the translate path.
-    public static let appleTranslateDenylist: Set<String> = ["id"]
+    /// when Apple's pack is installed. The translate path then runs Whisper's audio
+    /// `.translate` task, which only the translate-capable models can do.
+    ///
+    /// Currently EMPTY. `id` (Indonesian) used to live here (Apple's model leans
+    /// Malay, Whisper's id->en read truer) but the large-v3-turbo model CANNOT
+    /// audio-translate at all, so steering id to Whisper produced BLANK English on
+    /// Turbo. Removing it routes id to the decoupled `whisperAppleTranslate` path
+    /// (Whisper transcribes, Apple text-translates), which works on every model.
+    /// The mechanism stays for future use: anything added here falls back to
+    /// Whisper audio-translate, which silently produces nothing on Turbo. KNOWN
+    /// GAP (not yet guarded): Turbo + translate for any language that still routes
+    /// to `.whisper` (a future denylist entry, an Apple-unservable language, or
+    /// macOS < 26) yields blank English. The planned fix is to swap such sessions
+    /// to a translate-capable model (Medium). Transcribe-only is unaffected.
+    public static let appleTranslateDenylist: Set<String> = []
 
     /// Pure engine choice (no OS calls, so it's unit-testable).
     ///

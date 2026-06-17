@@ -94,8 +94,26 @@ import Testing
     }
 
     @Test func translateFallsBackForDenylistedSourceLanguage() {
-        // id is on the denylist (Apple leans Malay) -> Whisper audio-translates it,
-        // even with a locked + installed pair. Transcribe-only is unaffected.
+        // The denylist mechanism: any member -> Whisper audio-translate even with a
+        // locked + installed pair. The production set is currently EMPTY (id was
+        // removed so Turbo can translate it via Apple), so this iterates whatever's
+        // there; the mechanism is also covered by TranslationRouterTests'
+        // explicitWhisperPolicyOverridesAuto.
+        for iso in CaptionEngineKind.appleTranslateDenylist {
+            #expect(
+                CaptionEngineKind.select(
+                    translate: true,
+                    localeSupported: true,
+                    authorized: true,
+                    osHasApple: true,
+                    languageLocked: true,
+                    translationInstalled: true,
+                    sourceISOCode: iso
+                ) == .whisper
+            )
+        }
+        // id is NO LONGER denylisted: locked + installed now gets the decoupled
+        // Whisper-transcribe + Apple-translate path (works on Turbo).
         #expect(
             CaptionEngineKind.select(
                 translate: true,
@@ -105,9 +123,9 @@ import Testing
                 languageLocked: true,
                 translationInstalled: true,
                 sourceISOCode: "id"
-            ) == .whisper
+            ) == .whisperAppleTranslate
         )
-        // A non-denylisted source still gets the Whisper-transcribe + Apple-translate path.
+        // A regular source gets the same Whisper-transcribe + Apple-translate path.
         #expect(
             CaptionEngineKind.select(
                 translate: true,
