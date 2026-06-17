@@ -6,6 +6,26 @@ This project follows a loose [semantic versioning](https://semver.org) rhythm, a
 
 ---
 
+## 1.1 — "No more fizzled spells." (2026-06-17)
+
+A reliability release. 1.0 did the magic; 1.1 makes sure it doesn't fizzle when the conditions get awkward, a specific mic, a tricky language, a model that secretly can't translate. Two small quality-of-life charms came along for the ride.
+
+### Fixed
+- **Picking a specific microphone actually works now.** Choosing anything but "Automatic" in Settings used to capture pure silence, with the level meter sitting flat. It now binds the exact device you picked (built-in, EarPods, USB interface, all of them), and flipping back to Automatic still behaves.
+- **Translate no longer goes blank on the fast model.** The fastest transcription model can't translate audio at all, so some translate sessions came out with perfect captions and zero English. Now any session that needs to translate audio quietly borrows a translate-capable model just for that run, keeps your saved preference untouched, and tells you it did it. Works on every supported macOS version.
+- **Indonesian translates again.** It was being routed down a path the fast model couldn't serve, so you'd get crisp Indonesian captions and no English. Fixed: Indonesian now transcribes on-device and translates to English cleanly.
+- **A rare hiccup starting or stopping system capture.** Some shared audio state could be touched from two threads at once. Tightened so it can't.
+- **The last line no longer vanishes when you stop translating.** A translation still in flight when you hit stop now finishes and lands instead of getting dropped.
+
+### Improved
+- **"1 speaker" is now an option.** Tell Blablacadabra it's just one voice and it pins everything to a single speaker, so a lone talker can never accidentally split into S2 and S3.
+- **Bilingual captions feel instant.** In bilingual mode the original spoken line now appears the moment you speak, and the English lands when the sentence finishes, instead of waiting on the translation before showing anything at all.
+
+### Under the hood
+- Removed dead code, hardened the model-selection guard so a future change can't quietly bring the translate-blank bug back, and tightened app lifetime and diagnostics logging. Build clean, 103 tests green.
+
+---
+
 ## 1.0 — "Now you hear it, now you read it." (2026-06-14)
 
 The first public release. Everything below this line is the story of how Blablacadabra got here. Everything in this section is what you get when you open the box.

@@ -30,7 +30,7 @@ Blablacadabra sits quietly up in your menu bar like a familiar waiting to be use
 | 🪄 **Translate to English** | One toggle turns about 99 languages into live English. A universal translation charm for your menu bar. |
 | 🗨️ **Bilingual captions** | Keeps the original spoken line right above its English translation, so you read both at once. |
 | 🎨 **Speaker colors and labels** | When more than one voice shows up, each speaker gets a distinct color *and* a spelled-out label (S1, S2). No sorting hat required, but same energy. |
-| 🔢 **Manual speaker count** | Tell it how many people are talking and it locks that count, so one voice never splinters into a rainbow. |
+| 🔢 **Manual speaker count** | Tell it how many people are talking, from a single voice on up, and it locks that count, so one voice never splinters into a rainbow. |
 | ⚡ **Dual-engine routing** | Uses Apple's on-device SpeechAnalyzer where it's fastest and silently falls back to WhisperKit everywhere else. You never pick a wand, you just get the better one. |
 | 🔒 **On-device, always** | Every word is transcribed and translated locally. No account, no cloud, no audio ever leaving your Mac. |
 | ✍️ **Caption styling** | Dyslexia-friendly bundled fonts, high-contrast and warm-paper presets, a resizable overlay, and your choice of spelling (colour vs color). |

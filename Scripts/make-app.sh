@@ -10,7 +10,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$REPO}"
 APP="$DEST/Blablacadabra.app"
-VERSION="1.0" # First public release. System-wide on-device live captions + on-demand translate-to-English, dual engine (Apple SpeechAnalyzer fast-path with silent WhisperKit fallback), per-speaker colors via on-device diarization, real brand identity. See CHANGELOG.md for the full history.
+VERSION="1.1" # Reliability release on top of 1.0: explicit mic-device selection fixed (was capturing silence), translate works on any model (Turbo auto-swaps to a translate-capable model for audio-translate sessions), Indonesian translate restored, system-capture data-race fixed, plus a "1 speaker" option and instant bilingual originals. See CHANGELOG.md for the full history.
 
 echo "Building release binary..."
 swift build -c release --package-path "$REPO" --product Blablacadabra
