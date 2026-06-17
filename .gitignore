@@ -1,7 +1,12 @@
 # Internal documents — keep out of the repo
 Handoff.md
+Handoff-Archive.md
 docs-internal/
 *.handoff.md
+Design/Bug-Audit-2026-06-17.md
+Design/Item7-LLM-Translation-Plan.md
+Design/verify-checklist-2026-06-16.md
+scope-item8-quiet-mic.md
 
 # Build artifacts
 .build/
