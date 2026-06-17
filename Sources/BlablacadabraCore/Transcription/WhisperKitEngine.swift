@@ -20,6 +20,37 @@ public actor WhisperKitEngine: TranscriptionEngine {
     public static let availableModels = ["tiny", "small", "medium", turboModel]
     public static let defaultModel = "small"
 
+    /// The largest model that CAN audio-translate. Used as the safe substitute when
+    /// a translate session would otherwise route to Turbo's audio-translate (which is
+    /// a no-op, see `canAudioTranslate`). Mirrors `turboModel` as a single source of
+    /// truth so the swap logic and its tests don't hardcode the string.
+    public static let mediumModel = "medium"
+
+    /// Whether a model can perform Whisper's audio `.translate` task. OpenAI gutted
+    /// `.translate` in the large-v3-turbo distillation, so Turbo TRANSCRIBES only:
+    /// asking it to audio-translate yields blank output. Every other offered model
+    /// (tiny/small/medium) translates. Callers use this to avoid routing a translate
+    /// session that needs audio-translate onto Turbo.
+    public static func canAudioTranslate(_ model: String) -> Bool {
+        model != turboModel
+    }
+
+    /// The model a session should actually run on: the user's `model`, unless that
+    /// model can't audio-translate (Turbo) and the session needs to (per
+    /// `CaptionEngineKind.needsAudioTranslate`), in which case Medium substitutes for
+    /// the session only. Pure; the single source of truth for the Turbo->Medium
+    /// translate swap, shared by `AppState` and `TranslateModelSweepTests`.
+    public static func effectiveModel(
+        _ model: String,
+        engineKind: CaptionEngineKind,
+        translate: Bool,
+        locked: Bool
+    ) -> String {
+        guard engineKind.needsAudioTranslate(translate: translate, locked: locked),
+              !canAudioTranslate(model) else { return model }
+        return mediumModel
+    }
+
     /// Plain-language name for a model id (the turbo id is unreadable, and
     /// `capitalized` mangles it). Used by every model control.
     public static func displayName(for model: String) -> String {

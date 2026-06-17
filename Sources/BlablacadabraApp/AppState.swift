@@ -83,6 +83,10 @@ final class AppState: ObservableObject {
     /// Download progress (0...1) while the speech model is being fetched,
     /// nil otherwise. Drives the percentage in the status line.
     @Published private(set) var downloadProgress: Double?
+    /// A quiet, non-blocking heads-up for the current session, nil when there's
+    /// nothing to say. Currently set when a translate session was bumped off Turbo
+    /// onto Medium (Turbo can't audio-translate); cleared on stop / next start.
+    @Published private(set) var sessionNote: String?
     @Published private(set) var lines: [CaptionLine] = []
     @Published private(set) var partial: String?
     /// Which lane the live partial belongs to (Both mode), so a final from one
@@ -103,6 +107,12 @@ final class AppState: ObservableObject {
     /// Which engine the live session runs on, decided once per session in
     /// `launchSession`.
     private var activeSessionEngine: CaptionEngineKind = .whisper
+    /// The model THIS session's WhisperKit transcriber actually runs on. Normally
+    /// the user's saved `model`, but a translate session that would route to
+    /// Whisper's audio-translate is forced off Turbo (which can't audio-translate)
+    /// onto Medium for the session only, leaving the saved preference untouched.
+    /// Decided once per session in `launchSession`; read by `engine(for:)`.
+    private var activeModel: String = WhisperKitEngine.defaultModel
     /// Whether the live session is running on either Apple engine. Apple fixes its
     /// locale at init, so a spoken-language change must restart (vs Whisper's live,
     /// no-restart `setSpokenLanguage`).
@@ -561,6 +571,7 @@ final class AppState: ObservableObject {
         let generation = sessionGeneration
         startingNeedsDownload = !WhisperKitEngine.isModelCached(model)
         downloadProgress = nil
+        sessionNote = nil
         phase = .starting
         partial = nil
         partialOrigin = .single
@@ -581,6 +592,22 @@ final class AppState: ObservableObject {
             let engineKind = await self.resolveEngine(forceWhisper: forceWhisper)
             guard self.sessionGeneration == generation else { return }
             self.activeSessionEngine = engineKind
+
+            // Pick the model THIS session's transcriber runs on. A translate session
+            // that would lean on Whisper's audio-translate can't use Turbo (Turbo
+            // transcribes only -> blank English), so bump it to Medium for the
+            // session and tell the user quietly. The saved `model` preference is
+            // untouched. No-op for every non-translate or non-Turbo session.
+            let locked = (self.spokenLanguageCode?.isEmpty == false)
+            let sessionModel = self.effectiveModel(engineKind: engineKind, locked: locked)
+            self.activeModel = sessionModel
+            if sessionModel != self.model {
+                self.sessionNote = "Using Medium · Turbo can't translate audio"
+                // The effective model can differ from the pre-resolve estimate at the
+                // top of this method; correct the first-run download indicator.
+                self.startingNeedsDownload = !WhisperKitEngine.isModelCached(sessionModel)
+            }
+
             if engineKind == .appleTranscribe {
                 // Apple's transcribe models are OS-resident: English is instant
                 // (zero download); only an on-demand locale reports install progress
@@ -840,14 +867,26 @@ final class AppState: ObservableObject {
     }
 
     /// A prepared engine for a lane, reused while the model is unchanged. Each
-    /// lane origin keeps its own (Both mode needs two live instances).
+    /// lane origin keeps its own (Both mode needs two live instances). Runs on
+    /// `activeModel` (the session's effective model, which may be a Turbo->Medium
+    /// translate swap), not the raw saved `model`.
     private func engine(for origin: CaptionOrigin) -> WhisperKitEngine {
-        if let cached = preparedEngines[origin], cached.model == model {
+        if let cached = preparedEngines[origin], cached.model == activeModel {
             return cached.engine
         }
-        let engine = WhisperKitEngine(model: model)
-        preparedEngines[origin] = (model, engine)
+        let engine = WhisperKitEngine(model: activeModel)
+        preparedEngines[origin] = (activeModel, engine)
         return engine
+    }
+
+    /// The model this session actually runs on: the saved `model`, unless that model
+    /// can't audio-translate (Turbo) and the session needs it, in which case Medium
+    /// stands in for the session only. Delegates to the pure Core resolver (the single
+    /// source of truth, covered by `TranslateModelSweepTests`).
+    private func effectiveModel(engineKind: CaptionEngineKind, locked: Bool) -> String {
+        WhisperKitEngine.effectiveModel(
+            model, engineKind: engineKind, translate: translate, locked: locked
+        )
     }
 
     /// Apply a change to every live pipeline (one lane, or both lanes in Both
@@ -898,6 +937,7 @@ final class AppState: ObservableObject {
         sessionTasks = []
         sessionTask = nil
         downloadProgress = nil
+        sessionNote = nil
         phase = newPhase
         partialOrigin = .single
         levelMonitor.reset()
@@ -1067,10 +1107,11 @@ final class AppState: ObservableObject {
             // for the Apple translate path), otherwise once auto-detect names it.
             // Until then, the honest generic ("Translating to English (US)").
             let fromCode = detectedLanguageCode ?? spokenLanguageCode
+            let note = sessionNote.map { " · \($0)" } ?? ""
             if let from = SpokenLanguage.displayName(forCode: fromCode) {
-                return "\(from) → \(captionLocale.label) · \(sourceChoice.label)"
+                return "\(from) → \(captionLocale.label) · \(sourceChoice.label)\(note)"
             }
-            return "Translating to \(captionLocale.label) · \(sourceChoice.label)"
+            return "Translating to \(captionLocale.label) · \(sourceChoice.label)\(note)"
         case .paused:
             return "Paused · last lines kept"
         case .permissionNeeded:
