@@ -101,7 +101,7 @@ Task {
         }
     }
 
-    let factory = GemmaTranslatorFactory(
+    let factory = LLMTranslatorFactory(
         onDownloadProgress: { model, fraction in
             FileHandle.standardError.write(Data("\r  [\(model.rawValue)] downloading \(Int(fraction * 100))%\u{1B}[K".utf8))
         }

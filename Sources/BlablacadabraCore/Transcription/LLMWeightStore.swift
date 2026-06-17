@@ -21,6 +21,15 @@ import Hub
 // tested against an injected fake fetcher; the real fetcher (`HubWeightsSnapshotFetcher`)
 // is a thin pass-through to `HubApi.snapshot`.
 
+/// A downloadable model checkpoint, identified by its HF repo and on-disk folder. Lets the
+/// store serve any backend (Gemma, MADLAD, ...) instead of being tied to one service's enum.
+public protocol LLMWeightVariant: Sendable {
+    /// The Hugging Face repo to fetch from.
+    var repoId: String { get }
+    /// The on-disk cache subdir name (informational; the store keys off `repoId` to match Hub).
+    var folderName: String { get }
+}
+
 /// Abstracts the HF snapshot download so the store's cache / resume / integrity logic
 /// is unit-testable offline. The real impl hits the network via `HubApi`; tests inject
 /// a fake that writes files locally and reports synthetic progress.
@@ -96,7 +105,7 @@ public actor LLMWeightStore {
 
     /// Local folder a variant's weights live in: `cacheRoot/models/<repoId>`, matching
     /// `HubApi.localRepoLocation` exactly so `isCached` and the fetcher agree on the path.
-    public func variantFolder(_ variant: GemmaTranslationService.ModelVariant) -> URL {
+    public func variantFolder(_ variant: any LLMWeightVariant) -> URL {
         cacheRoot
             .appendingPathComponent("models", isDirectory: true)
             .appendingPathComponent(variant.repoId, isDirectory: true)
@@ -105,7 +114,7 @@ public actor LLMWeightStore {
     /// True only when the variant is fully downloaded: all required files present AND the
     /// completion sentinel written. A partial/interrupted download returns false so the
     /// caller refetches (Hub then resumes the missing bytes).
-    public func isCached(_ variant: GemmaTranslationService.ModelVariant) -> Bool {
+    public func isCached(_ variant: any LLMWeightVariant) -> Bool {
         let folder = variantFolder(variant)
         return hasCompletionSentinel(folder) && hasRequiredFiles(folder)
     }
@@ -115,7 +124,7 @@ public actor LLMWeightStore {
     /// always 1.0 on success. Throws `LLMWeightStoreError` on download failure or if the
     /// fetched folder is missing required files.
     public func ensureAvailable(
-        _ variant: GemmaTranslationService.ModelVariant,
+        _ variant: any LLMWeightVariant,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> URL {
         let folder = variantFolder(variant)
@@ -150,6 +159,24 @@ public actor LLMWeightStore {
         markComplete(downloaded)
         progress(1.0)
         return downloaded
+    }
+
+    // Concrete Gemma-typed overloads. The protocol-typed methods above can't be called with
+    // leading-dot syntax (`.gemma3_4B`); these let existing call sites keep that, delegating
+    // to the neutral implementation. New backends pass their variant value directly.
+    public func variantFolder(_ variant: GemmaTranslationService.ModelVariant) -> URL {
+        variantFolder(variant as any LLMWeightVariant)
+    }
+
+    public func isCached(_ variant: GemmaTranslationService.ModelVariant) -> Bool {
+        isCached(variant as any LLMWeightVariant)
+    }
+
+    public func ensureAvailable(
+        _ variant: GemmaTranslationService.ModelVariant,
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) async throws -> URL {
+        try await ensureAvailable(variant as any LLMWeightVariant, progress: progress)
     }
 
     // MARK: - On-disk checks

@@ -10,10 +10,9 @@ import BlablacadabraCore
 // § B.4). The runner is model-/network-free at the seam: it talks to a `TranslatorFactory`,
 // so the loop is unit-testable offline with a fake.
 
-/// A translation model under test. Maps to a Gemma variant where a backend exists;
-/// MADLAD is in the plan but its backend isn't built yet, so the factory reports it
-/// unsupported and the runner records an error row (the run keeps going — the
-/// partial-failure rule).
+/// A translation model under test. Each maps to a real `TextTranslating` backend: the two
+/// Gemma sizes (B.2) and MADLAD-400 3B (B.5). A model that fails to build/warm at runtime
+/// still yields an error row so one failure never kills the run (the partial-failure rule).
 public enum BakeOffModel: String, CaseIterable, Sendable {
     case gemma3_4B = "gemma-3-4b"
     case gemma3_1B = "gemma-3-1b"

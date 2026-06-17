@@ -100,16 +100,14 @@ import Testing
         #expect(failed.allSatisfy { $0.tokensPerSec == nil && $0.macID == "test-mac" })
     }
 
-    @Test func madladReportsUnsupportedViaRealFactory() async {
-        // The production factory has no MADLAD backend yet → error row, run survives.
-        let runner = BakeOffRunner(factory: GemmaTranslatorFactory())
-        let config = BakeOffConfig(models: [.madlad400_3B], runs: 1, macID: "test-mac")
-        let rows = await runner.run(
-            config: config,
-            clips: [BakeOffClip(clipId: "es-1", sourceISO: "es", sourceText: ["hola"])]
-        )
-        #expect(rows.count == 1)
-        #expect(rows.first?.error != nil)
+    @Test func allBakeOffModelsParseFromCLINames() {
+        // Both contenders are now real backends (Gemma B.2, MADLAD B.5); the runner's
+        // error-row path is covered by partialFailureDoesNotKillTheRun above.
+        #expect(BakeOffModel(cliName: "gemma-3-4b") == .gemma3_4B)
+        #expect(BakeOffModel(cliName: "gemma-3-1b") == .gemma3_1B)
+        #expect(BakeOffModel(cliName: "madlad-400-3b") == .madlad400_3B)
+        #expect(BakeOffModel(cliName: "MADLAD-400-3B") == .madlad400_3B)   // case-insensitive
+        #expect(BakeOffModel(cliName: "llama") == nil)
     }
 
     // MARK: - Row encoding (locked column names)

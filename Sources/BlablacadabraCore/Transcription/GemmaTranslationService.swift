@@ -28,7 +28,7 @@ public actor GemmaTranslationService: TextTranslating {
 
     /// Which Gemma checkpoint to run. `repoId` is the Hugging Face repo the B.3
     /// weights store will fetch from; `folderName` is the on-disk cache subdir.
-    public enum ModelVariant: String, Sendable, CaseIterable {
+    public enum ModelVariant: String, Sendable, CaseIterable, LLMWeightVariant {
         /// Tier-1 latency candidate (decoder-only, first-class mlx-swift support).
         case gemma3_4B
         /// Small-machine fallback (Phase C step 13). Same architecture, fewer layers.
