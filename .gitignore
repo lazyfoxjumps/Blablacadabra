@@ -29,3 +29,10 @@ Blablacadabra.app/
 
 # Packaged disk image (shipped as a GitHub release asset, not committed)
 *.dmg
+
+# Phase 7B B.4: real bake-off audio clips are licensed/large — keep them local.
+# (manifest.json + README.md + .gitkeep are tracked; the audio files are not.)
+Resources/BakeOff/clips/*
+!Resources/BakeOff/clips/.gitkeep
+Resources/BakeOff/manifest.local.json
+bakeoff-*.json

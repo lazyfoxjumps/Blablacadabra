@@ -148,12 +148,37 @@ public actor GemmaTranslationService: TextTranslating {
         let promptTokens = encodePrompt(trimmed, sourceISO: sourceISO, tokenizer: tokenizer)
         guard !promptTokens.isEmpty else { return nil }
 
-        let output = generate(promptTokens: promptTokens, model: model, tokenizer: tokenizer)
+        let output = generate(promptTokens: promptTokens, model: model, tokenizer: tokenizer).text
         let cleaned = output.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Guardrail: empty or runaway output is worse than skipping the line.
         guard !cleaned.isEmpty, cleaned.count <= max(64, trimmed.count * 12) else { return nil }
         return cleaned
+    }
+
+    /// Bake-off-only variant of `translate` that ALSO reports the number of tokens the
+    /// decoder generated, so the B.4 harness can compute tokens/sec from the actual
+    /// decode count rather than re-tokenizing the output. OFF the live path — the
+    /// pipeline only ever calls `translate(_:from:)`, which ignores the count. Same
+    /// guardrails: returns nil on empty input, an unservable source, or runaway output.
+    public func translateMeasured(
+        _ text: String,
+        from sourceISO: String? = nil
+    ) async -> (text: String, outputTokens: Int)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let sourceISO, SpokenLanguage.displayName(forCode: sourceISO) == nil {
+            return nil
+        }
+        guard let model, let tokenizer else { return nil }
+
+        let promptTokens = encodePrompt(trimmed, sourceISO: sourceISO, tokenizer: tokenizer)
+        guard !promptTokens.isEmpty else { return nil }
+
+        let (output, tokenCount) = generate(promptTokens: promptTokens, model: model, tokenizer: tokenizer)
+        let cleaned = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty, cleaned.count <= max(64, trimmed.count * 12) else { return nil }
+        return (cleaned, tokenCount)
     }
 
     public func stop() {
@@ -200,8 +225,14 @@ public actor GemmaTranslationService: TextTranslating {
 
     /// Deterministic greedy generation: prefill the prompt, then take argmax tokens
     /// one at a time through the KV cache until `<end_of_turn>`/EOS or the token cap.
-    /// Greedy (no sampling) keeps the bake-off reproducible.
-    private func generate(promptTokens: [Int], model: GemmaModel, tokenizer: Tokenizer) -> String {
+    /// Greedy (no sampling) keeps the bake-off reproducible. Returns the decoded text
+    /// plus the number of tokens generated (the bake-off's tokens/sec numerator; the
+    /// live `translate` path discards the count).
+    private func generate(
+        promptTokens: [Int],
+        model: GemmaModel,
+        tokenizer: Tokenizer
+    ) -> (text: String, tokenCount: Int) {
         let caches = model.makeCaches()
 
         // Prefill the whole prompt in one pass.
@@ -218,7 +249,7 @@ public actor GemmaTranslationService: TextTranslating {
             next = lastTokenArgmax(logits)
         }
 
-        return tokenizer.decode(tokens: generated, skipSpecialTokens: true)
+        return (tokenizer.decode(tokens: generated, skipSpecialTokens: true), generated.count)
     }
 
     /// Argmax over the vocabulary of the LAST position's logits -> a token id.

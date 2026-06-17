@@ -1,0 +1,57 @@
+{
+  "_comment": "Phase 7B B.4 bake-off manifest. Each clip lists the source-language lines fed to the translator and the ground-truth English used LATER for human/BLEU scoring (the harness does not score quality). 'audio' is optional and only used by --concurrent-with-whisper. Real licensed audio clips live in clips/ (gitignored); point --manifest at a local file to add them. The text-only entries below let the harness run end-to-end (latency + tokens/sec) without committed audio.",
+  "clips": [
+    {
+      "clip_id": "es-sample-01",
+      "source_iso": "es",
+      "audio": null,
+      "source_text": [
+        "Buenos días, ¿cómo está usted hoy?",
+        "El proyecto estará listo la próxima semana."
+      ],
+      "expected_english": [
+        "Good morning, how are you today?",
+        "The project will be ready next week."
+      ]
+    },
+    {
+      "clip_id": "id-sample-01",
+      "source_iso": "id",
+      "audio": null,
+      "source_text": [
+        "Selamat pagi, apa kabar hari ini?",
+        "Rapat akan dimulai pukul sepuluh."
+      ],
+      "expected_english": [
+        "Good morning, how are you today?",
+        "The meeting will start at ten o'clock."
+      ]
+    },
+    {
+      "clip_id": "ar-sample-01",
+      "source_iso": "ar",
+      "audio": null,
+      "source_text": [
+        "صباح الخير، كيف حالك اليوم؟",
+        "سيكون التقرير جاهزًا غدًا."
+      ],
+      "expected_english": [
+        "Good morning, how are you today?",
+        "The report will be ready tomorrow."
+      ]
+    },
+    {
+      "clip_id": "ja-sample-01",
+      "source_iso": "ja",
+      "audio": null,
+      "source_text": [
+        "おはようございます、今日はお元気ですか？",
+        "会議は十時に始まります。"
+      ],
+      "expected_english": [
+        "Good morning, how are you today?",
+        "The meeting starts at ten o'clock."
+      ]
+    }
+  ]
+}

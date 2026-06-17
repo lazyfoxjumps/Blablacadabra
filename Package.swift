@@ -8,6 +8,9 @@ let package = Package(
         .library(name: "BlablacadabraCore", targets: ["BlablacadabraCore"]),
         .executable(name: "capture-check", targets: ["CaptureCheck"]),
         .executable(name: "transcribe-check", targets: ["TranscribeCheck"]),
+        // Phase 7B (B.4): translation bake-off CLI. Its own target, never linked into
+        // the app (BlablacadabraApp does NOT depend on BakeOffKit/BakeOff).
+        .executable(name: "BakeOff", targets: ["BakeOff"]),
         .executable(name: "Blablacadabra", targets: ["BlablacadabraApp"]),
     ],
     dependencies: [
@@ -64,9 +67,25 @@ let package = Package(
             name: "BlablacadabraApp",
             dependencies: ["BlablacadabraCore"]
         ),
+        // Phase 7B (B.4): bake-off logic as a LIBRARY so the runner + metrics are
+        // unit-testable (an executable target can't be `@testable import`ed). The CLI
+        // `BakeOff` is a thin main on top. Neither is a dependency of BlablacadabraApp,
+        // so the harness never ships in the app binary.
+        .target(
+            name: "BakeOffKit",
+            dependencies: ["BlablacadabraCore"]
+        ),
+        .executableTarget(
+            name: "BakeOff",
+            dependencies: ["BakeOffKit", "BlablacadabraCore"]
+        ),
         .testTarget(
             name: "BlablacadabraCoreTests",
             dependencies: ["BlablacadabraCore"]
+        ),
+        .testTarget(
+            name: "BakeOffKitTests",
+            dependencies: ["BakeOffKit"]
         ),
     ]
 )
