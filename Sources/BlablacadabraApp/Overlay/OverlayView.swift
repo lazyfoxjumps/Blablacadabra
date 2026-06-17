@@ -259,11 +259,11 @@ struct OverlayView: View {
     /// Calm, zero jokes, fix-first (voice doc). What happened, why, one step.
     private func permissionLost(textColor: RGB, theme: ResolvedTheme) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("macOS turned off my audio access (this can happen after an update). One click fixes it.")
+            Text("macOS dropped my audio access (common after an update). In the list that opens, toggle Blablacadabra off and back on, even if it still looks on.")
                 .font(state.fontChoice.font(size: max(14, state.fontSize * 0.8)))
                 .foregroundStyle(textColor.color)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Open System Settings") {
+            Button("Open Screen Recording settings") {
                 CapturePermissions.openScreenRecordingSettings()
             }
             .buttonStyle(AccentButtonStyle(theme: theme))
