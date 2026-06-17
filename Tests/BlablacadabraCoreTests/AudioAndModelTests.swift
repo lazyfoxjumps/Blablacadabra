@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import BlablacadabraCore
 
@@ -61,5 +62,70 @@ import Testing
         #expect(WhisperKitEngine.displayName(for: "small") == "Small")
         #expect(WhisperKitEngine.displayName(for: "medium") == "Medium")
         #expect(WhisperKitEngine.displayName(for: WhisperKitEngine.turboModel) == "Turbo")
+    }
+}
+
+@Suite struct LegacyCacheMigrationTests {
+    /// Build a fake "models/argmaxinc/whisperkit-coreml/<variant>/marker" tree
+    /// under `base` so we can assert moves without real model blobs.
+    private func seedModel(_ variant: String, under base: URL, marker: String = "weights") throws {
+        let dir = base
+            .appendingPathComponent("models/argmaxinc/whisperkit-coreml/\(variant)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try marker.data(using: .utf8)!.write(to: dir.appendingPathComponent("marker.txt"))
+    }
+
+    private func modelExists(_ variant: String, under base: URL) -> Bool {
+        let f = base
+            .appendingPathComponent("models/argmaxinc/whisperkit-coreml/\(variant)/marker.txt", isDirectory: false)
+        return FileManager.default.fileExists(atPath: f.path)
+    }
+
+    @Test func movesLegacyModelsAndRemovesEmptyLegacyTree() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("blabla-migrate-\(UUID().uuidString)")
+        let legacy = root.appendingPathComponent("Documents/huggingface")
+        let new = root.appendingPathComponent("AppSupport/Blablacadabra/huggingface")
+        defer { try? fm.removeItem(at: root) }
+
+        try seedModel("openai_whisper-tiny", under: legacy)
+        try seedModel("openai_whisper-large-v3-turbo", under: legacy)
+
+        WhisperKitEngine.migrateLegacyCache(legacyBase: legacy, newBase: new)
+
+        #expect(modelExists("openai_whisper-tiny", under: new))
+        #expect(modelExists("openai_whisper-large-v3-turbo", under: new))
+        // Empty legacy tree is cleaned up entirely.
+        #expect(!fm.fileExists(atPath: legacy.path))
+    }
+
+    @Test func keepsNewerCopyAndDropsStaleLegacyDuplicate() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("blabla-migrate-\(UUID().uuidString)")
+        let legacy = root.appendingPathComponent("Documents/huggingface")
+        let new = root.appendingPathComponent("AppSupport/Blablacadabra/huggingface")
+        defer { try? fm.removeItem(at: root) }
+
+        // Same variant in both; new (re-downloaded) copy must win, legacy dropped.
+        try seedModel("openai_whisper-medium", under: legacy, marker: "OLD")
+        try seedModel("openai_whisper-medium", under: new, marker: "NEW")
+
+        WhisperKitEngine.migrateLegacyCache(legacyBase: legacy, newBase: new)
+
+        let markerURL = new
+            .appendingPathComponent("models/argmaxinc/whisperkit-coreml/openai_whisper-medium/marker.txt")
+        #expect((try? String(contentsOf: markerURL, encoding: .utf8)) == "NEW")
+        #expect(!fm.fileExists(atPath: legacy.path)) // legacy emptied + removed
+    }
+
+    @Test func noLegacyFolderIsANoOp() {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("blabla-migrate-\(UUID().uuidString)")
+        let legacy = root.appendingPathComponent("Documents/huggingface")
+        let new = root.appendingPathComponent("AppSupport/Blablacadabra/huggingface")
+        defer { try? fm.removeItem(at: root) }
+        // Nothing seeded; must not crash or create anything.
+        WhisperKitEngine.migrateLegacyCache(legacyBase: legacy, newBase: new)
+        #expect(!fm.fileExists(atPath: new.path))
     }
 }

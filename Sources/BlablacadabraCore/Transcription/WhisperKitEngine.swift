@@ -147,9 +147,66 @@ public actor WhisperKitEngine: TranscriptionEngine {
         )
     }
 
+    /// The pre-1.2 cache location: WhisperKit's default `~/Documents/huggingface`.
+    /// Kept only so `migrateLegacyCacheIfNeeded()` can rescue already-downloaded
+    /// models (Turbo is ~630MB, the full set ~2.7GB) instead of forcing a
+    /// re-download after the move to Application Support.
+    static func legacyCacheBase() -> URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("huggingface", isDirectory: true)
+    }
+
+    /// One-time move of any models still sitting in the old `~/Documents`
+    /// location into the new Application Support cache. Same volume, so each
+    /// model dir is an instant rename, not a multi-GB copy. Per-model: only
+    /// moves variants the new location doesn't already have, so a model already
+    /// re-downloaded in the new spot is left untouched (the stale legacy copy is
+    /// then deleted to reclaim disk). Best-effort: any failure is swallowed and
+    /// the worst case is a re-download, never a crash.
+    static func migrateLegacyCacheIfNeeded() {
+        guard let legacyBase = legacyCacheBase(), let newBase = cacheBase() else { return }
+        migrateLegacyCache(legacyBase: legacyBase, newBase: newBase)
+    }
+
+    /// Path-taking core of the migration, split out so it can be unit-tested
+    /// against temp directories instead of the real `~/Documents` /
+    /// Application Support locations. Best-effort: failures are swallowed (worst
+    /// case a re-download), never thrown.
+    static func migrateLegacyCache(legacyBase: URL, newBase: URL) {
+        let fm = FileManager.default
+        let suffix = "models/argmaxinc/whisperkit-coreml"
+        let legacyModels = legacyBase.appendingPathComponent(suffix, isDirectory: true)
+        let newModels = newBase.appendingPathComponent(suffix, isDirectory: true)
+        guard fm.fileExists(atPath: legacyModels.path) else { return }
+
+        try? fm.createDirectory(at: newModels, withIntermediateDirectories: true)
+        let entries = (try? fm.contentsOfDirectory(at: legacyModels, includingPropertiesForKeys: nil)) ?? []
+        for entry in entries {
+            let dest = newModels.appendingPathComponent(entry.lastPathComponent)
+            if fm.fileExists(atPath: dest.path) {
+                // Already present in the new cache (re-downloaded). Drop the
+                // stale legacy copy to reclaim disk.
+                try? fm.removeItem(at: entry)
+            } else {
+                try? fm.moveItem(at: entry, to: dest)
+            }
+        }
+        // If the legacy models dir is now empty, take the whole tree with it so
+        // `~/Documents/huggingface` stops lingering as orphaned clutter.
+        let remaining = (try? fm.contentsOfDirectory(at: legacyModels, includingPropertiesForKeys: nil)) ?? []
+        if remaining.isEmpty {
+            try? fm.removeItem(at: legacyBase)
+        }
+    }
+
     public func prepare() async throws {
         guard whisper == nil else { return }
         let handler = prepareHandler
+
+        // Rescue any models left in the pre-1.2 `~/Documents` cache before we
+        // decide whether a download is needed (so an existing Turbo/Medium
+        // download isn't re-fetched just because the folder moved).
+        Self.migrateLegacyCacheIfNeeded()
 
         // Download explicitly (instead of letting WhisperKit.init do it
         // silently) so progress can reach the UI. Cached models skip this.
