@@ -25,7 +25,14 @@ let package = Package(
         // the swift-transformers tokenizer already in the graph via WhisperKit.
         // Apple-Silicon only; off the live caption path until Phase 7C. Pinned EXACT:
         // the runtime moves fast and a silent bump could swing bake-off numbers.
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.4")
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.4"),
+        // Phase 7B (B.2): the Gemma tokenizer. swift-transformers is ALREADY in the
+        // graph transitively via WhisperKit at 1.1.9; we pin EXACT to that same version
+        // so taking a direct dependency adds no solve change and cannot reintroduce the
+        // version conflict the model-zoo would have (see B.1 gotcha in Package above).
+        // `Tokenizers` does the SentencePiece/BPE encode/decode; `Hub` is the weights
+        // fetcher reused by the B.3 LLMWeightStore.
+        .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9")
     ],
     targets: [
         .target(
@@ -39,7 +46,10 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXRandom", package: "mlx-swift"),
-                .product(name: "MLXLinalg", package: "mlx-swift")
+                .product(name: "MLXLinalg", package: "mlx-swift"),
+                // Phase 7B (B.2): tokenizer + Hub fetcher for the Gemma backend.
+                .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "Hub", package: "swift-transformers")
             ]
         ),
         .executableTarget(
