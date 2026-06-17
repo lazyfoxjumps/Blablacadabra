@@ -312,6 +312,10 @@ public actor WhisperKitEngine: TranscriptionEngine {
         let text = Self.cleaned(
             results.map(\.text).joined(separator: " ")
         )
+        // Opt-in: records forced-language vs emitted-script per decode so a
+        // "locked ko, got Japanese" drift is visible. No-op unless the hidden
+        // diagnosticsLanguageLog flag is on; never stores the text.
+        LanguageDiagnostics.record(model: model, task: task, forced: language, text: text)
         // result.language is the SOURCE language on the transcribe task, but
         // the TARGET ("en") on the translate task (verified live: a Japanese
         // clip translates with result.language == "en"). Callers that need

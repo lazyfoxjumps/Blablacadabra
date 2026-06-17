@@ -164,3 +164,20 @@ import Testing
         #expect(!supported.contains("jv"))
     }
 }
+
+@Suite struct LanguageDiagnosticsScriptTests {
+    @Test func classifiesKoreanByHangul() {
+        #expect(LanguageDiagnostics.script(of: "안녕하세요 반갑습니다") == .korean)
+    }
+    @Test func classifiesJapaneseByKanaEvenWithKanji() {
+        // The exact screenshot string: kanji + hiragana -> japanese, never chinese.
+        #expect(LanguageDiagnostics.script(of: "何を言うかを言っちゃない") == .japanese)
+    }
+    @Test func classifiesChineseHanWithoutKana() {
+        #expect(LanguageDiagnostics.script(of: "你好世界") == .chinese)
+    }
+    @Test func classifiesLatinAndEmpty() {
+        #expect(LanguageDiagnostics.script(of: "I'm going to do it.") == .latin)
+        #expect(LanguageDiagnostics.script(of: "   ") == .empty)
+    }
+}
