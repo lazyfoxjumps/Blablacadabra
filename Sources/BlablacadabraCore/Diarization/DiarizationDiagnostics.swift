@@ -25,6 +25,13 @@ public final class DiarizationDiagnostics: @unchecked Sendable {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        // Ensure the file exists so every `log` takes the append (FileHandle)
+        // path. Without this, the first writer (file absent) fell to the atomic
+        // `write(to:)` fallback, which REPLACES the whole file instead of
+        // appending — clobbering any lines another lane already wrote.
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
     }
 
     public func log(samples: Int, rms: Float, similarity: Float, decision: String) {
@@ -35,13 +42,13 @@ public final class DiarizationDiagnostics: @unchecked Sendable {
         guard let data = line.data(using: .utf8) else { return }
         lock.lock()
         defer { lock.unlock() }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        } else {
-            try? data.write(to: url, options: .atomic)
-        }
+        // Append only. The file is created in init, so the handle path is the
+        // normal route; if it ever fails we DROP the line rather than fall back
+        // to an atomic full-file write that would truncate existing content.
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
     }
 
     private static let formatter: ISO8601DateFormatter = {

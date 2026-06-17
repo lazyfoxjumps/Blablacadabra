@@ -51,6 +51,9 @@ public actor TranslatingPipeline: CaptionPipeline {
     private var finalQueue: [(source: String, fallback: String?, language: String?, speaker: SpeakerID?)] = []
     private var translating = false
     private var innerFinished = false
+    /// The in-flight translation task spawned by `pump`, tracked so `stop` can let
+    /// it finish and yield before teardown instead of cutting off the last line.
+    private var pumpTask: Task<Void, Never>?
 
     public init(
         inner: any CaptionPipeline,
@@ -96,6 +99,12 @@ public actor TranslatingPipeline: CaptionPipeline {
         await inner.stop()        // finishes innerStream; the consume loop then exits
         await consumeTask?.value
         consumeTask = nil
+        // Let the in-flight translation finish and yield before teardown, so the
+        // line being translated when stop() lands isn't dropped onto a nil'd
+        // continuation. (A deeper backlog may still drop trailing lines, which is
+        // acceptable on an explicit stop; the common case is one line in flight.)
+        await pumpTask?.value
+        pumpTask = nil
         await translator.stop()
         finishCaptions()
     }
@@ -155,7 +164,7 @@ public actor TranslatingPipeline: CaptionPipeline {
             finalQueue.removeFirst()
             let from = item.language ?? sourceISO
             translating = true
-            Task {
+            pumpTask = Task {
                 // Apple (via the router/service) is preferred; on a miss the line uses
                 // the inner's carried Whisper-translate fallback so it never goes blank.
                 let english = (await self.translator.translate(item.source, from: from)) ?? item.fallback
@@ -178,7 +187,7 @@ public actor TranslatingPipeline: CaptionPipeline {
                 return
             }
             translating = true
-            Task {
+            pumpTask = Task {
                 // Partials have no fallback (kept cheap); a miss just shows nothing
                 // until the final settles it.
                 let english = await self.translator.translate(partial.text, from: from)

@@ -32,23 +32,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !state.hasOnboarded {
             showOnboarding()
         }
-
-        // TEMP verification hook (remove before commit): start captions on
-        // launch so monitoring runs don't need a status-item click.
-        if ProcessInfo.processInfo.environment["BLABLA_AUTOSTART"] != nil {
-            state.startCaptions()
-        }
-
-        // TEMP screenshot hooks (remove before commit).
-        if ProcessInfo.processInfo.environment["BLABLA_OPEN_SETTINGS"] != nil {
-            showSettings()
-            NSApp.activate(ignoringOtherApps: true)
-        }
-        if ProcessInfo.processInfo.environment["BLABLA_OPEN_PANEL"] != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                self?.menuBar.openPanelForScreenshot()
-            }
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

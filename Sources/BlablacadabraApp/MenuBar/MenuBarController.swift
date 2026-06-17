@@ -39,12 +39,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             .store(in: &subscriptions)
     }
 
-    // TEMP screenshot hook (remove before commit): lets AppDelegate open the
-    // panel without a real menu-bar click.
-    func openPanelForScreenshot() {
-        togglePopover()
-    }
-
     @objc private func togglePopover() {
         if popover.isShown {
             popover.performClose(nil)
